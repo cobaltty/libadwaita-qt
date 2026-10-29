@@ -22,12 +22,12 @@
 
 #include "adwaitascrollbardata.h"
 #include "adwaitawidgetstateengine.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 namespace Adwaita
 {
 //* stores scrollbar hovered action and timeLine
-class ADWAITAQT_EXPORT ScrollBarEngine : public WidgetStateEngine
+class LIBADWAITA_EXPORT ScrollBarEngine : public WidgetStateEngine
 {
     Q_OBJECT
 

@@ -21,7 +21,7 @@
 #define ADWAITA_WINDOW_MANAGER_H
 
 #include "adwaita.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 #include "config-adwaita.h"
 
 #include <QEvent>
@@ -34,7 +34,7 @@
 
 namespace Adwaita
 {
-class ADWAITAQT_EXPORT WindowManager : public QObject
+class LIBADWAITA_EXPORT WindowManager : public QObject
 {
     Q_OBJECT
 public:

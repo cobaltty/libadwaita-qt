@@ -23,12 +23,12 @@
 #define ADWAITA_RENDERER_H
 
 #include "adwaita.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 namespace Adwaita
 {
 
-class ADWAITAQT_MAIN_EXPORT Renderer
+class LIBADWAITA_MAIN_EXPORT Renderer
 {
 public:
     static void renderDebugFrame(const StyleOptions &options);
@@ -36,6 +36,8 @@ public:
     static void renderFocusRect(const StyleOptions &options, Sides sides = SideNone);
 
     static void renderFocusLine(const StyleOptions &options);
+
+    static void renderMenuItemHighlight(const StyleOptions &options);
 
     static void renderFrame(const StyleOptions &options);
 
@@ -48,6 +50,10 @@ public:
     static void renderMenuFrame(const StyleOptions &options, bool roundCorners = true);
 
     static void renderButtonFrame(const StyleOptions &options);
+
+    static void renderComboBoxFrame(const StyleOptions &options);
+
+    static void renderCardFrame(const StyleOptions &options);
 
     static void renderCheckBoxFrame(const StyleOptions &options);
 

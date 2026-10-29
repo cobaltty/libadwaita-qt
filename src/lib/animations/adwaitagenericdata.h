@@ -22,7 +22,7 @@
 
 #include "adwaitaanimation.h"
 #include "adwaitaanimationdata.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 #include <QObject>
 #include <QTextStream>
@@ -30,7 +30,7 @@
 namespace Adwaita
 {
 //* generic data
-class ADWAITAQT_EXPORT GenericData : public AnimationData
+class LIBADWAITA_EXPORT GenericData : public AnimationData
 {
     Q_OBJECT
 

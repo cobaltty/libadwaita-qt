@@ -21,12 +21,12 @@
 #define ADWAITA_ENABLE_DATA_H
 
 #include "adwaitawidgetstatedata.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 namespace Adwaita
 {
 //* Enable data
-class ADWAITAQT_EXPORT EnableData : public WidgetStateData
+class LIBADWAITA_EXPORT EnableData : public WidgetStateData
 {
     Q_OBJECT
 public:

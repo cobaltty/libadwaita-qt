@@ -29,7 +29,7 @@
 #include "adwaitatabbarengine.h"
 #include "adwaitatoolboxengine.h"
 #include "adwaitawidgetstateengine.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 #include <QList>
 #include <QObject>
@@ -37,7 +37,7 @@
 namespace Adwaita
 {
 //* stores engines
-class ADWAITAQT_EXPORT Animations : public QObject
+class LIBADWAITA_EXPORT Animations : public QObject
 {
     Q_OBJECT
 

@@ -29,7 +29,7 @@
 
 #include "adwaita.h"
 #include "adwaitaanimation.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 #include <QWidget>
 
@@ -38,7 +38,7 @@
 namespace Adwaita
 {
 //* temporary widget used to perform smooth transition between one widget state and another
-class ADWAITAQT_EXPORT TransitionWidget : public QWidget
+class LIBADWAITA_EXPORT TransitionWidget : public QWidget
 {
     Q_OBJECT
 

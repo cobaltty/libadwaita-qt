@@ -23,12 +23,12 @@
 #include "adwaitabaseengine.h"
 #include "adwaitadatamap.h"
 #include "adwaitaheaderviewdata.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 namespace Adwaita
 {
 //* stores headerview hovered action and timeLine
-class ADWAITAQT_EXPORT HeaderViewEngine : public BaseEngine
+class LIBADWAITA_EXPORT HeaderViewEngine : public BaseEngine
 {
     Q_OBJECT
 public:

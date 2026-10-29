@@ -21,14 +21,14 @@
 #define ADWAITA_SCROLLBAR_DATA_H
 
 #include "adwaitawidgetstatedata.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 #include <QStyle>
 
 namespace Adwaita
 {
 //* scrollbar data
-class ADWAITAQT_EXPORT ScrollBarData : public WidgetStateData
+class LIBADWAITA_EXPORT ScrollBarData : public WidgetStateData
 {
     Q_OBJECT
     Q_PROPERTY(qreal addLineOpacity READ addLineOpacity WRITE setAddLineOpacity)

@@ -21,7 +21,7 @@
 #define ADWAITA_DATAMAP_H
 
 #include "adwaita.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 #include <QMap>
 #include <QObject>
@@ -31,7 +31,7 @@ namespace Adwaita
 {
 //* data map
 /** it maps templatized data object to associated object */
-template<typename K, typename T> class ADWAITAQT_EXPORT BaseDataMap : public QMap<const K *, WeakPointer<T>>
+template<typename K, typename T> class LIBADWAITA_EXPORT BaseDataMap : public QMap<const K *, WeakPointer<T>>
 {
 public:
     using Key = const K *;
@@ -149,7 +149,7 @@ private:
 };
 
 //* standard data map, using QObject as a key
-template<typename T> class ADWAITAQT_EXPORT DataMap : public BaseDataMap<QObject, T>
+template<typename T> class LIBADWAITA_EXPORT DataMap : public BaseDataMap<QObject, T>
 {
 public:
     //* constructor
@@ -164,7 +164,7 @@ public:
 };
 
 //* QPaintDevice based dataMap
-template<typename T> class ADWAITAQT_EXPORT PaintDeviceDataMap : public BaseDataMap<QPaintDevice, T>
+template<typename T> class LIBADWAITA_EXPORT PaintDeviceDataMap : public BaseDataMap<QPaintDevice, T>
 {
 public:
     //* constructor

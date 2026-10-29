@@ -21,14 +21,14 @@
 #define ADWAITA_TABBAR_DATA_H
 
 #include "adwaitaanimationdata.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 #include <QTabBar>
 
 namespace Adwaita
 {
 //* tabbars
-class ADWAITAQT_EXPORT TabBarData : public AnimationData
+class LIBADWAITA_EXPORT TabBarData : public AnimationData
 {
     Q_OBJECT
 

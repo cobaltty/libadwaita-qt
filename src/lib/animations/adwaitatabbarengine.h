@@ -24,12 +24,12 @@
 #include "adwaitabaseengine.h"
 #include "adwaitadatamap.h"
 #include "adwaitatabbardata.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 namespace Adwaita
 {
 //* stores tabbar hovered action and timeLine
-class ADWAITAQT_EXPORT TabBarEngine : public BaseEngine
+class LIBADWAITA_EXPORT TabBarEngine : public BaseEngine
 {
     Q_OBJECT
 public:

@@ -28,14 +28,14 @@
 #define ADWAITA_STACKEDWIDGET_DATA_H
 
 #include "adwaitatransitiondata.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 #include <QStackedWidget>
 
 namespace Adwaita
 {
 //! generic data
-class ADWAITAQT_EXPORT StackedWidgetData : public TransitionData
+class LIBADWAITA_EXPORT StackedWidgetData : public TransitionData
 {
     Q_OBJECT
 

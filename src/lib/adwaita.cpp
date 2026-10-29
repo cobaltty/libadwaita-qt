@@ -19,7 +19,6 @@
  *************************************************************************/
 
 #include "adwaita.h"
-#include "adwaitacolors_p.h"
 #include "animations/adwaitaanimations.h"
 
 namespace Adwaita
@@ -164,7 +163,7 @@ ColorVariant StyleOptions::colorVariant() const
     Q_D(const StyleOptions);
 
     if (d->m_colorVariant == ColorVariant::Unknown) {
-        return ColorsPrivate::isDarkMode() ? ColorVariant::AdwaitaDark : ColorVariant::Adwaita;
+        return ColorVariant::AdwaitaDark;
     }
 
     return d->m_colorVariant;

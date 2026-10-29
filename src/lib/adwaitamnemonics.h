@@ -20,7 +20,7 @@
 #ifndef ADWAITA_MNEMONICS_H
 #define ADWAITA_MNEMONICS_H
 
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 #include <QApplication>
 #include <QEvent>
@@ -28,7 +28,7 @@
 
 namespace Adwaita
 {
-class ADWAITAQT_EXPORT Mnemonics : public QObject
+class LIBADWAITA_EXPORT Mnemonics : public QObject
 {
     Q_OBJECT
 public:

@@ -30,12 +30,12 @@
 #include "adwaitabaseengine.h"
 #include "adwaitadatamap.h"
 #include "adwaitastackedwidgetdata.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 namespace Adwaita
 {
 //! used for simple widgets
-class ADWAITAQT_EXPORT StackedWidgetEngine : public BaseEngine
+class LIBADWAITA_EXPORT StackedWidgetEngine : public BaseEngine
 {
     Q_OBJECT
 public:

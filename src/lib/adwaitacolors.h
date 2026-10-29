@@ -23,14 +23,14 @@
 #define ADWAITA_COLORS_H
 
 #include "adwaita.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 #include <QColor>
 
 namespace Adwaita
 {
 
-class ADWAITAQT_MAIN_EXPORT Colors
+class LIBADWAITA_MAIN_EXPORT Colors
 {
 public:
     // Color adjustments
@@ -40,6 +40,10 @@ public:
     static QColor lighten(const QColor &color, qreal amount = 0.1);
     static QColor mix(const QColor &c1, const QColor &c2, qreal bias = 0.5);
     static QColor transparentize(const QColor &color, qreal amount = 0.1);
+
+    // Luminance-based contrast text color for accent/suggested buttons.
+    // Returns dark text on light backgrounds, white on dark backgrounds.
+    static QColor contrastTextColor(const QColor &bg);
 
     static QPalette disabledPalette(const QPalette &source, qreal ratio);
     // Color palette for each Adwaita variant
@@ -232,6 +236,11 @@ public:
        * palette
      */
     static QColor tabBarColor(const StyleOptions &options);
+    /* Relevant options:
+       * palette
+       * color variant
+     */
+    static QColor cardBackgroundColor(const StyleOptions &options);
 };
 
 } // namespace Adwaita

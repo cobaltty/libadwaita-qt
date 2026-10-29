@@ -22,93 +22,114 @@
 
 #include "adwaita.h"
 
-#include <QHash>
-
-class QColor;
+#include <QColor>
+#include <QColor>
 
 namespace Adwaita
 {
 
-class ColorsPrivate : public QObject
+// ── Structured Libadwaita color palette ───────────────────────────
+// Official GNOME/Libadwaita (GNOME 42+) hex values.  Each struct is
+// a self-contained snapshot of one theme variant so the palette can
+// be switched at runtime without any filesystem I/O.
+
+struct AdwaitaPalette
 {
-    Q_OBJECT
+    // Surface colors
+    QColor base;
+    QColor text;
+    QColor bg;
+    QColor fg;
+
+    // Selection
+    QColor selectedFg;
+    QColor selectedBg;
+    QColor selectedBorders;
+
+    // Borders
+    QColor borders;
+    QColor altBorders;
+    QColor bordersEdge;
+
+    // Links
+    QColor link;
+    QColor linkVisited;
+
+    // Accent / fills
+    QColor topHilight;
+    QColor darkFill;
+    QColor headerbarBg;
+    QColor menuColor;
+    QColor menuSelected;
+    QColor sidebarBg;
+
+    // Scrollbar
+    QColor scrollbarBg;
+    QColor scrollbarSlider;
+    QColor scrollbarSliderHover;
+    QColor scrollbarSliderActive;
+
+    // Status
+    QColor warning;
+    QColor error;
+    QColor success;
+    QColor destructive;
+
+    // OSD / tooltips
+    QColor osdFg;
+    QColor osdText;
+    QColor osdBg;
+    QColor osdInsensitiveBg;
+    QColor osdInsensitiveFg;
+    QColor osdBorders;
+    QColor tooltipBorders;
+    QColor shadow;
+    QColor dropTarget;
+
+    // Insensitive state
+    QColor insensitiveFg;
+    QColor insensitiveBg;
+    QColor insensitiveBorders;
+
+    // Backdrop (inactive window) state
+    QColor backdropBase;
+    QColor backdropText;
+    QColor backdropBg;
+    QColor backdropFg;
+    QColor backdropInsensitive;
+    QColor backdropSelectedFg;
+    QColor backdropBorders;
+    QColor backdropDarkFill;
+
+    // Special-purpose widget colors
+    QColor suggestedBg;
+    QColor suggestedBorder;
+    QColor progressBg;
+    QColor progressBorder;
+    QColor checkradioBg;
+    QColor checkradioFg;
+    QColor checkradioBorders;
+    QColor switchBg;
+    QColor switchBorders;
+    QColor focusBorder;
+    QColor altFocusBorder;
+
+    static const AdwaitaPalette &light();
+    static const AdwaitaPalette &dark();
+};
+
+// ── ColorsPrivate ───────────────────────────────────────────────
+// Provides indexed access into AdwaitaPalette.  Named palette colors
+// are served directly from AdwaitaPalette::light()/dark().
+
+class ColorsPrivate
+{
 public:
-    enum AdwaitaColor {
-        invalid_color= 0,
-        base_color,
-        text_color,
-        bg_color,
-        fg_color,
-        selected_fg_color,
-        selected_bg_color,
-        selected_borders_color,
-        borders_color,
-        alt_borders_color,
-        borders_edge,
-        link_color,
-        link_visited_color,
-        top_hilight,
-        dark_fill,
-        headerbar_bg_color,
-        menu_color,
-        menu_selected_color,
-        scrollbar_bg_color,
-        scrollbar_slider_color,
-        scrollbar_slider_hover_color,
-        scrollbar_slider_active_color,
-        warning_color,
-        error_color,
-        success_color,
-        destructive_color,
-        osd_fg_color,
-        osd_text_color,
-        osd_bg_color,
-        osd_insensitive_bg_color,
-        osd_insensitive_fg_color,
-        osd_borders_color,
-        sidebar_bg_color,
-        tooltip_borders_color,
-        shadow_color,
-        drop_target_color,
-        insensitive_fg_color,
-        insensitive_bg_color,
-        insensitive_borders_color,
-        backdrop_base_color,
-        backdrop_text_color,
-        backdrop_bg_color,
-        backdrop_fg_color,
-        backdrop_insensitive_color,
-        backdrop_selected_fg_color,
-        backdrop_borders_color,
-        backdrop_dark_fill,
-        suggested_bg_color,
-        suggested_border_color,
-        progress_bg_color,
-        progress_border_color,
-        checkradio_bg_color,
-        checkradio_fg_color,
-        checkradio_borders_color,
-        switch_bg_color,
-        switch_borders_color,
-        focus_border_color,
-        alt_focus_border_color
-    };
-    Q_ENUM(AdwaitaColor);
-
     ColorsPrivate();
-    virtual ~ColorsPrivate();
 
-    QColor adwaitaColor(AdwaitaColor color, ColorVariant variant);
-    QColor adwaitaWidgetColor(const QString &color, ColorVariant variant);
-    static bool isDarkMode();
-
-private:
-    QHash<AdwaitaColor, QHash<ColorVariant, QColor> > m_colors;
-    QHash<QString, QMap<ColorVariant, QColor> > m_widgetColors;
+    QColor adwaitaColor(int colorId, ColorVariant variant) const;
 };
 
 } // namespace Adwaita
 
 #endif // ADWAITA_COLORS_P_H
-
-

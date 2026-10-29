@@ -29,7 +29,7 @@ class StylePlugin : public QStylePlugin
 {
     Q_OBJECT
 
-    Q_PLUGIN_METADATA(IID "org.qt-project.Qt.QStyleFactoryInterface" FILE "adwaita.json")
+    Q_PLUGIN_METADATA(IID "org.qt-project.Qt.QStyleFactoryInterface" FILE "libadwaita.json")
 public:
 
     //* constructor

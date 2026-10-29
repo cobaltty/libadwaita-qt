@@ -20,13 +20,13 @@
 #ifndef ADWAITA_BUSY_INDICATOR_DATA_
 #define ADWAITA_BUSY_INDICATOR_DATA_
 
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 #include <QObject>
 
 namespace Adwaita
 {
-class ADWAITAQT_EXPORT BusyIndicatorData : public QObject
+class LIBADWAITA_EXPORT BusyIndicatorData : public QObject
 {
     Q_OBJECT
 public:

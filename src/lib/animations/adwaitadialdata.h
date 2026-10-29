@@ -21,12 +21,12 @@
 #define ADWAITA_DIAL_DATA_H
 
 #include "adwaitawidgetstatedata.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 namespace Adwaita
 {
 //* dial data
-class ADWAITAQT_EXPORT DialData : public WidgetStateData
+class LIBADWAITA_EXPORT DialData : public WidgetStateData
 {
     Q_OBJECT
 public:

@@ -23,12 +23,12 @@
 #include "adwaitabaseengine.h"
 #include "adwaitadatamap.h"
 #include "adwaitawidgetstatedata.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 namespace Adwaita
 {
 //* QToolBox animation engine
-class ADWAITAQT_EXPORT ToolBoxEngine : public BaseEngine
+class LIBADWAITA_EXPORT ToolBoxEngine : public BaseEngine
 {
     Q_OBJECT
 

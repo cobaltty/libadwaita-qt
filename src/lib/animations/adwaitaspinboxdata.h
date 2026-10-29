@@ -21,14 +21,14 @@
 #define ADWAITA_SPINBOX_DATA_H
 
 #include "adwaitaanimationdata.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 #include <QStyle>
 
 namespace Adwaita
 {
 //* handles spinbox arrows hover
-class ADWAITAQT_EXPORT SpinBoxData : public AnimationData
+class LIBADWAITA_EXPORT SpinBoxData : public AnimationData
 {
     Q_OBJECT
 
@@ -207,7 +207,7 @@ public:
 
 private:
     //* container for needed animation data
-    class ADWAITAQT_EXPORT Data
+    class LIBADWAITA_EXPORT Data
     {
     public:
         //* default constructor

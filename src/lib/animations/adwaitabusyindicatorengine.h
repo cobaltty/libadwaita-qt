@@ -24,12 +24,12 @@
 #include "adwaitabaseengine.h"
 #include "adwaitabusyindicatordata.h"
 #include "adwaitadatamap.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 namespace Adwaita
 {
 //* handles progress bar animations
-class ADWAITAQT_EXPORT BusyIndicatorEngine : public BaseEngine
+class LIBADWAITA_EXPORT BusyIndicatorEngine : public BaseEngine
 {
     Q_OBJECT
 

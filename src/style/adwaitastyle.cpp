@@ -27,6 +27,7 @@
 #include "animations/adwaitaanimations.h"
 #include "adwaita.h"
 #include "adwaitacolors.h"
+#include "adwaitacolors_p.h"
 #include "adwaitamnemonics.h"
 #include "adwaitasplitterproxy.h"
 #include "adwaitarenderer.h"
@@ -36,7 +37,12 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDBusArgument>
 #include <QDBusConnection>
+#include <QDBusInterface>
+#include <QDBusMessage>
+#include <QDBusReply>
+#include <QDBusVariant>
 #include <QDial>
 #include <QDialog>
 #include <QDockWidget>
@@ -58,6 +64,7 @@
 #include <QTextEdit>
 #include <QToolBar>
 #include <QToolBox>
+#include <QTimer>
 #include <QToolButton>
 #include <QWidgetAction>
 
@@ -153,6 +160,230 @@ private:
     int _itemMargin;
 };
 
+// ── XDG Desktop Portal color-scheme listener ─────────────────────
+// Reads org.freedesktop.appearance / color-scheme via the.portal
+// Settings interface and emits a signal when the user toggles
+// light/dark mode at the desktop level.
+class XdgPortalListener : public QObject
+{
+    Q_OBJECT
+public:
+    explicit XdgPortalListener(QObject *parent = nullptr)
+        : QObject(parent)
+    {
+        // Connect to the SettingChanged signal for live updates first,
+        // so we never miss a change even if the initial read is slow.
+        QDBusConnection::sessionBus().connect(
+            QStringLiteral("org.freedesktop.portal.Desktop"),
+            QStringLiteral("/org/freedesktop/portal/desktop"),
+            QStringLiteral("org.freedesktop.portal.Settings"),
+            QStringLiteral("SettingChanged"),
+            this,
+            SLOT(onSettingChanged(QString, QString, QDBusVariant)));
+
+        // Attempt to read the initial value immediately.
+        readInitialValues();
+
+        // The portal service may not be ready yet when the style is first
+        // constructed (common on cold boot / first launch).  Retry once
+        // after a short delay so we pick up the real values even if the
+        // first Read() silently failed.
+        QTimer::singleShot(500, this, &XdgPortalListener::readInitialValues);
+    }
+
+    Adwaita::ColorVariant currentVariant() const
+    {
+        return variantForScheme(_currentScheme);
+    }
+
+    QColor currentAccentColor() const
+    {
+        return _currentAccent;
+    }
+
+Q_SIGNALS:
+    void colorSchemeChanged(Adwaita::ColorVariant newVariant);
+    void accentColorChanged(const QColor &newColor);
+
+private:
+    // Read both color-scheme and accent-color from the portal.
+    // Called immediately on construction and again after a short delay
+    // in case the portal service wasn't ready yet.
+    //
+    // On the very first call (_emittingReady is false) we only cache the
+    // values — we do NOT emit signals yet because the Style object has
+    // not connected to our signals at that point.  The deferred retry
+    // (after 500 ms) will set _emittingReady=true and then emit if
+    // the values changed.
+    void readInitialValues()
+    {
+        QDBusInterface iface(
+            QStringLiteral("org.freedesktop.portal.Desktop"),
+            QStringLiteral("/org/freedesktop/portal/desktop"),
+            QStringLiteral("org.freedesktop.portal.Settings"),
+            QDBusConnection::sessionBus(),
+            this);
+
+        if (!iface.isValid()) {
+            qWarning() << "Portal interface invalid, will retry";
+            return;
+        }
+
+        // ── color-scheme ──
+        {
+            QDBusMessage msg = QDBusMessage::createMethodCall(
+                iface.service(), iface.path(), iface.interface(),
+                QStringLiteral("Read"));
+            msg << QStringLiteral("org.freedesktop.appearance")
+                << QStringLiteral("color-scheme");
+
+            QDBusMessage reply = QDBusConnection::sessionBus().call(msg);
+            if (reply.type() == QDBusMessage::ReplyMessage
+                && !reply.arguments().isEmpty()) {
+                QVariant arg = reply.arguments().at(0);
+                while (arg.canConvert<QDBusVariant>())
+                    arg = arg.value<QDBusVariant>().variant();
+                uint scheme = arg.toUInt();
+                qWarning() << "Portal color-scheme raw:" << scheme;
+                if (scheme != _currentScheme) {
+                    _currentScheme = scheme;
+                    if (_emittingReady)
+                        Q_EMIT colorSchemeChanged(variantForScheme(scheme));
+                }
+            } else {
+                qWarning() << "Portal color-scheme read failed"
+                           << reply.type() << reply.errorMessage();
+            }
+        }
+
+        // ── accent-color ──
+        {
+            QColor c = readAccentColor(iface);
+            if (c.isValid() && c != _currentAccent) {
+                _currentAccent = c;
+                if (_emittingReady)
+                    Q_EMIT accentColorChanged(c);
+            }
+        }
+
+        _emittingReady = true;
+    }
+
+private Q_SLOTS:
+    void onSettingChanged(const QString &ns, const QString &key, const QDBusVariant &value)
+    {
+        if (ns != QStringLiteral("org.freedesktop.appearance")) {
+            return;
+        }
+
+        if (key == QStringLiteral("color-scheme")) {
+            uint scheme = value.variant().toUInt();
+            if (scheme == _currentScheme) {
+                return;
+            }
+            _currentScheme = scheme;
+            Q_EMIT colorSchemeChanged(variantForScheme(scheme));
+            return;
+        }
+
+        if (key == QStringLiteral("accent-color")) {
+            // Accent comes as a struct (aydd) — a tuple of 3 doubles.
+            QColor newAccent = parseAccentVariant(value.variant());
+            if (!newAccent.isValid() || newAccent == _currentAccent) {
+                return;
+            }
+            _currentAccent = newAccent;
+            Q_EMIT accentColorChanged(_currentAccent);
+        }
+    }
+
+private:
+    static Adwaita::ColorVariant variantForScheme(uint scheme)
+    {
+        // 0 = default (follow light), 1 = prefer-dark, 2 = force-light
+        return (scheme == 1) ? Adwaita::AdwaitaDark : Adwaita::Adwaita;
+    }
+
+    static QColor parseAccentVariant(const QVariant &v)
+    {
+        // The portal returns a D-Bus struct (ddd) wrapped in QDBusVariant,
+        // but Qt may double-wrap it: QVariant(QDBusVariant(QDBusVariant((ddd)))).
+        // Unwrap all layers until we reach the actual struct.
+        qWarning() << "Raw accent QVariant type:" << v.typeName();
+
+        QVariant inner = v;
+        while (inner.canConvert<QDBusVariant>()) {
+            inner = inner.value<QDBusVariant>().variant();
+        }
+
+        qWarning() << "Unwrapped accent QVariant type:" << inner.typeName();
+
+        if (inner.canConvert<QDBusArgument>()) {
+            const QDBusArgument arg = inner.value<QDBusArgument>();
+            double r = 0.0, g = 0.0, b = 0.0;
+            arg.beginStructure();
+            arg >> r >> g >> b;
+            arg.endStructure();
+            QColor parsedColor = QColor::fromRgbF(qBound(0.0, r, 1.0),
+                                                 qBound(0.0, g, 1.0),
+                                                 qBound(0.0, b, 1.0));
+            qWarning() << "Successfully parsed Accent Color:" << parsedColor;
+            return parsedColor;
+        }
+
+        // Fallback: some Qt versions may flatten it to a QVariantList.
+        if (inner.typeId() == QMetaType::QVariantList) {
+            const QVariantList list = inner.toList();
+            if (list.size() >= 3) {
+                bool ok1 = false, ok2 = false, ok3 = false;
+                double r = list[0].toDouble(&ok1);
+                double g = list[1].toDouble(&ok2);
+                double b = list[2].toDouble(&ok3);
+                if (ok1 && ok2 && ok3) {
+                    QColor parsedColor = QColor::fromRgbF(qBound(0.0, r, 1.0),
+                                                         qBound(0.0, g, 1.0),
+                                                         qBound(0.0, b, 1.0));
+                    qWarning() << "Successfully parsed Accent Color (list):" << parsedColor;
+                    return parsedColor;
+                }
+            }
+        }
+
+        // Invalid or unrecognized → fallback to Adwaita blue.
+        qWarning() << "Failed to parse accent color, falling back to #3584e4";
+        return QColor(QStringLiteral("#3584e4"));
+    }
+
+    QColor readAccentColor(QDBusInterface &iface)
+    {
+        QDBusMessage msg = QDBusMessage::createMethodCall(
+            iface.service(),
+            iface.path(),
+            iface.interface(),
+            QStringLiteral("Read"));
+        msg << QStringLiteral("org.freedesktop.appearance")
+            << QStringLiteral("accent-color");
+
+        QDBusReply<QDBusVariant> reply = QDBusConnection::sessionBus().call(msg);
+        if (reply.isValid()) {
+            qWarning() << "Portal accent-color raw QDBusVariant type:"
+                        << reply.value().variant().typeName();
+            QColor c = parseAccentVariant(reply.value().variant());
+            if (c.isValid()) {
+                qWarning() << "Initial accent color from portal:" << c;
+                return c;
+            }
+        }
+
+        qWarning() << "Portal accent-color unavailable, using fallback #3584e4";
+        return QColor(QStringLiteral("#3584e4"));
+    }
+
+    bool _emittingReady = false;
+    uint _currentScheme = 0;
+    QColor _currentAccent { QStringLiteral("#3584e4") };
+};
+
 } // namespace AdwaitaPrivate
 
 void tabLayout(const QStyleOptionTab *opt, const QWidget *widget, QRect *textRect, QRect *iconRect, const QStyle *proxyStyle)
@@ -217,12 +448,37 @@ void tabLayout(const QStyleOptionTab *opt, const QWidget *widget, QRect *textRec
     *textRect = tr;
 }
 
+// ── Accent luminance helper ──────────────────────────────────────
+// Returns a dark or light text color depending on the perceived luminance
+// of the given accent, ensuring high-contrast text on any accent.
+static QColor contrastingTextColor(const QPalette &palette, const QColor &accent)
+{
+    // ITU-R BT.709 relative luminance
+    const double luma = 0.2126 * accent.redF()
+                      + 0.7152 * accent.greenF()
+                      + 0.0722 * accent.blueF();
+    // Use palette-derived dark/light colors instead of hardcoded black/white
+    const QColor darkText = palette.color(QPalette::Dark);
+    const QColor lightText = palette.color(QPalette::Light);
+    return (luma > 0.5) ? darkText : lightText;
+}
+
+// Apply accent + contrast-aware HighlightedText to a palette.
+static void applyAccentToPalette(QPalette &palette, const QColor &accent)
+{
+    const QColor text = contrastingTextColor(palette, accent);
+    palette.setColor(QPalette::Active,   QPalette::Highlight, accent);
+    palette.setColor(QPalette::Inactive, QPalette::Highlight, accent);
+    palette.setColor(QPalette::Active,   QPalette::HighlightedText, text);
+    palette.setColor(QPalette::Inactive, QPalette::HighlightedText, text);
+}
+
 namespace Adwaita
 {
 //______________________________________________________________
 Style::Style(ColorVariant variant)
-    : _addLineButtons(SingleButton)
-    , _subLineButtons(SingleButton)
+    : _addLineButtons(NoButton)
+    , _subLineButtons(NoButton)
     , _helper(new Helper())
     , _animations(new Animations(this))
     , _mnemonics(new Mnemonics(this))
@@ -237,6 +493,35 @@ Style::Style(ColorVariant variant)
     // For GNOME desktop, dont want translucent backgrounds otherwise no menu shadow is drawn.
     _isKDE = qgetenv("XDG_CURRENT_DESKTOP").toLower() == "kde";
     _isGNOME = qgetenv("XDG_CURRENT_DESKTOP").toLower() == "gnome";
+
+    // ── XDG Desktop Portal color-scheme listener ──────────────────
+    // If the portal is available, adopt its initial scheme and
+    // listen for live changes so the palette refreshes automatically.
+    _portalListener = new AdwaitaPrivate::XdgPortalListener(this);
+    connect(_portalListener, &AdwaitaPrivate::XdgPortalListener::colorSchemeChanged,
+            this, &Style::onPortalColorSchemeChanged);
+    connect(_portalListener, &AdwaitaPrivate::XdgPortalListener::accentColorChanged,
+            this, &Style::onAccentColorChanged);
+
+    // If the portal provided a different scheme than the caller
+    // requested, adopt it immediately (the portal is authoritative).
+    if (_portalListener->currentVariant() != variant) {
+        _variant = _portalListener->currentVariant();
+        _dark = (_variant == AdwaitaDark || _variant == AdwaitaHighcontrastInverse);
+    }
+
+    // Adopt the portal's initial accent color.
+    _accentColor = _portalListener->currentAccentColor();
+
+    // Push the correct palette to the application immediately so that
+    // widgets created before polish(QApplication*) runs already get the
+    // right colors.  Without this, Qt's platform theme injects its own
+    // (usually light) palette into early widgets.
+    if (qApp) {
+        QPalette initialPalette = Colors::palette(_variant);
+        applyAccentToPalette(initialPalette, _accentColor);
+        qApp->setPalette(initialPalette);
+    }
 
     // call the slot directly; this initial call will set up things that also
     // need to be reset when the system palette changes
@@ -255,6 +540,15 @@ void Style::polish(QWidget *widget)
     if (!widget) {
         return;
     }
+
+    // Force the current variant palette onto every widget as the very first step.
+    // The QPA platform theme may have already assigned a foreign palette to this
+    // widget when it was created.  Overriding it here ensures dock widgets, item
+    // views, list views, toolbars, and any other child widget receives the correct
+    // colors.  Any widget-specific tweaks below will layer on top of this.
+    QPalette widgetPalette = Colors::palette(_variant);
+    applyAccentToPalette(widgetPalette, _accentColor);
+    widget->setPalette(widgetPalette);
 
     // register widget to animations
     _animations->registerWidget(widget);
@@ -291,12 +585,49 @@ void Style::polish(QWidget *widget)
         widget->clearMask();
     }
 
+    // Menus, combo popups, and dialog windows need translucent backgrounds
+    // so that anti-aliased rounded corners don't show black edges.
+    if (qobject_cast<QMenu *>(widget)
+        || widget->inherits("QComboBoxPrivateContainer")
+        || widget->windowFlags().testFlags(Qt::Popup)) {
+        if (_helper->compositingActive()) {
+            widget->setAttribute(Qt::WA_TranslucentBackground);
+        }
+        widget->setWindowFlags(widget->windowFlags() | Qt::FramelessWindowHint);
+        // Libadwaita popup padding
+        if (qobject_cast<QMenu *>(widget)) {
+            widget->setContentsMargins(1, 1, 1, 1);
+        } else if (widget->inherits("QComboBoxPrivateContainer")) {
+            widget->setContentsMargins(4, 4, 4, 4);
+        }
+    }
+
     // scrollarea polishing is somewhat complex. It is moved to a dedicated method
     polishScrollArea(qobject_cast<QAbstractScrollArea *>(widget));
 
     if (QAbstractItemView *itemView = qobject_cast<QAbstractItemView *>(widget)) {
         // enable mouse over effects in itemviews' viewport
         itemView->viewport()->setAttribute(Qt::WA_Hover);
+
+        // Sidebar detection: tree/list inside a QDockWidget or used as a source list
+        bool isSidebar = qobject_cast<QDockWidget *>(widget->parentWidget())
+                         || widget->parentWidget()->inherits("QDockWidget")
+                         || widget->parentWidget()->inherits("KXmlGuiWindow");
+
+        if (isSidebar) {
+            // Distinct sidebar tint
+            const AdwaitaPalette &ap = (_variant == ColorVariant::AdwaitaDark)
+                ? AdwaitaPalette::dark() : AdwaitaPalette::light();
+            QPalette pal = widget->palette();
+            pal.setColor(QPalette::Base, ap.sidebarBg);
+            pal.setColor(QPalette::Window, ap.sidebarBg);
+            widget->setPalette(pal);
+            itemView->viewport()->setAutoFillBackground(false);
+
+            // Store sidebar flag for selection pill and separator
+            widget->setProperty("isSidebar", true);
+            itemView->viewport()->setProperty("isSidebarViewport", true);
+        }
     } else if (QGroupBox *groupBox = qobject_cast<QGroupBox *>(widget))  {
         // checkable group boxes
         if (groupBox->isCheckable()) {
@@ -496,14 +827,38 @@ void Style::unpolish(QWidget *widget)
     ParentStyleClass::unpolish(widget);
 }
 
+void Style::polish(QApplication *application)
+{
+    // Override the application-wide palette with the current Adwaita palette.
+    QPalette appPalette = Colors::palette(_variant);
+    applyAccentToPalette(appPalette, _accentColor);
+    application->setPalette(appPalette);
+
+    // The QPA platform theme may have already injected its own palette into
+    // widgets that were created before this polish call.  Force the correct
+    // palette onto every live widget so dark mode takes effect immediately.
+    for (QWidget *w : application->allWidgets()) {
+        w->setPalette(appPalette);
+    }
+    for (QWidget *w : application->topLevelWidgets()) {
+        w->setPalette(appPalette);
+        w->update();
+    }
+
+    ParentStyleClass::polish(application);
+}
+
 void Style::polish(QPalette &palette)
 {
     palette = Colors::palette(_variant);
+    applyAccentToPalette(palette, _accentColor);
 }
 
 QPalette Style::standardPalette() const
 {
-    return Colors::palette(_variant);
+    QPalette p = Colors::palette(_variant);
+    applyAccentToPalette(p, _accentColor);
+    return p;
 }
 
 //______________________________________________________________
@@ -614,7 +969,7 @@ int Style::pixelMetric(PixelMetric metric, const QStyleOption *option, const QWi
     case PM_ToolBarSeparatorExtent:
         return Metrics::ToolBar_SeparatorWidth;
     case PM_ToolBarExtensionExtent:
-        return pixelMetric(PM_SmallIconSize, option, widget) + 2 * Metrics::ToolButton_MarginWidth;
+        return pixelMetric(PM_SmallIconSize, option, widget) + 2 * Metrics::ToolButton_MarginWidth + 4;
 
     case PM_ToolBarItemMargin:
         return 0;
@@ -1133,6 +1488,9 @@ void Style::drawControl(ControlElement element, const QStyleOption *option, QPai
     case CE_HeaderEmptyArea:
         fcn = &Style::drawHeaderEmptyAreaControl;
         break;
+    case CE_Header:
+        fcn = &Style::drawHeaderControl;
+        break;
     case CE_TabBarTabLabel:
         fcn = &Style::drawTabBarTabLabelControl;
         break;
@@ -1144,6 +1502,9 @@ void Style::drawControl(ControlElement element, const QStyleOption *option, QPai
         break;
     case CE_ToolBoxTabShape:
         fcn = &Style::drawToolBoxTabShapeControl;
+        break;
+    case CE_ToolBoxTab:
+        fcn = &Style::drawToolBoxTabControl;
         break;
     case CE_DockWidgetTitle:
         fcn = &Style::drawDockWidgetTitleControl;
@@ -1215,6 +1576,9 @@ void Style::drawComplexControl(ComplexControl element, const QStyleOptionComplex
 void Style::drawItemText(QPainter *painter, const QRect &rect, int flags, const QPalette &palette, bool enabled,
                          const QString &text, QPalette::ColorRole textRole) const
 {
+    // ensure clean text antialiasing
+    painter->setRenderHint(QPainter::TextAntialiasing, true);
+
     // hide mnemonics if requested
     if (!_mnemonics->enabled() && (flags & Qt::TextShowMnemonic) && !(flags & Qt::TextHideMnemonic)) {
         flags &= ~Qt::TextShowMnemonic;
@@ -1237,6 +1601,21 @@ void Style::drawItemText(QPainter *painter, const QRect &rect, int flags, const 
         if (_animations->widgetEnabilityEngine().isAnimated(widget, AnimationEnable)) {
             QPalette copy(Colors::disabledPalette(palette, _animations->widgetEnabilityEngine().opacity(widget, AnimationEnable)));
             return ParentStyleClass::drawItemText(painter, rect, flags, copy, enabled, text, textRole);
+        }
+    }
+
+    // Force pure white text on selected items for maximum contrast
+    // against highlight backgrounds (pink accent, blue accent, etc.)
+    if (painter->pen().color() != Qt::white && painter->brush().style() != Qt::NoBrush) {
+        // Check if we're painting on a highlighted background
+        QPalette::ColorGroup group = enabled ? QPalette::Active : QPalette::Disabled;
+        QColor highlight = palette.color(group, QPalette::Highlight);
+        QColor currentBrush = painter->brush().color();
+        if (highlight.isValid() && currentBrush.isValid()
+            && qAbs(highlight.red() - currentBrush.red()) < 30
+            && qAbs(highlight.green() - currentBrush.green()) < 30
+            && qAbs(highlight.blue() - currentBrush.blue()) < 30) {
+            painter->setPen(palette.color(group, QPalette::HighlightedText));
         }
     }
 
@@ -1270,6 +1649,19 @@ bool Style::eventFilter(QObject *object, QEvent *event)
     if ((!widget->parent() || !qobject_cast<QWidget *>(widget->parent()) || qobject_cast<QDialog *>(widget) || qobject_cast<QMainWindow *>(widget))
             && (event->type() == QEvent::Show || event->type() == QEvent::StyleChange)) {
         configurationChanged();
+    }
+
+    // Sidebar viewport: draw 1px right-edge separator
+    if (event->type() == QEvent::Paint && widget->property("isSidebarViewport").toBool()) {
+        QPainter painter(widget);
+        QPaintEvent *paintEvent = static_cast<QPaintEvent *>(event);
+        painter.setClipRegion(paintEvent->region());
+
+        const AdwaitaPalette &ap = (_variant == ColorVariant::AdwaitaDark)
+            ? AdwaitaPalette::dark() : AdwaitaPalette::light();
+        QColor sepColor = Colors::alphaColor(ap.fg, 0.08);
+        painter.setPen(QPen(sepColor, 1));
+        painter.drawLine(widget->rect().topRight(), widget->rect().bottomRight());
     }
 
     // fallback
@@ -1575,6 +1967,74 @@ void Style::configurationChanged(void)
 {
     // reload configuration
     loadConfiguration();
+}
+
+//____________________________________________________________________
+void Style::onPortalColorSchemeChanged(ColorVariant newVariant)
+{
+    if (newVariant == _variant) {
+        return;
+    }
+
+    _variant = newVariant;
+    _dark = (newVariant == AdwaitaDark || newVariant == AdwaitaHighcontrastInverse);
+
+    // Push the new palette to the application and ALL widgets.
+    if (qApp) {
+        QPalette newPalette = Colors::palette(_variant);
+
+        // Apply accent color and contrast-aware HighlightedText.
+        applyAccentToPalette(newPalette, _accentColor);
+
+        // 1. Application-wide palette — future widgets inherit this.
+        qApp->setPalette(newPalette);
+        qApp->style()->polish(qApp);
+
+        // 2. Every live widget, including item views, input fields, docks, etc.
+        //    Use qApp->allWidgets() so children are covered, not just top-level.
+        for (QWidget *w : qApp->allWidgets()) {
+            w->setPalette(newPalette);
+            w->update();
+        }
+
+        // 3. Top-level windows that may not appear in allWidgets() yet.
+        for (QWidget *w : qApp->topLevelWidgets()) {
+            w->setPalette(newPalette);
+            w->update();
+        }
+    }
+}
+
+//____________________________________________________________________
+void Style::onAccentColorChanged(const QColor &newColor)
+{
+    if (!newColor.isValid() || newColor == _accentColor) {
+        return;
+    }
+
+    qWarning() << "Accent color changed:" << _accentColor << "->" << newColor;
+    _accentColor = newColor;
+
+    if (qApp) {
+        // Rebuild the palette for the current variant and override Highlight.
+        QPalette newPalette = Colors::palette(_variant);
+        applyAccentToPalette(newPalette, _accentColor);
+
+        qApp->setPalette(newPalette);
+        qApp->style()->polish(qApp);
+
+        for (QWidget *w : qApp->allWidgets()) {
+            w->setPalette(newPalette);
+            w->update();
+        }
+
+        for (QWidget *w : qApp->topLevelWidgets()) {
+            w->setPalette(newPalette);
+            w->update();
+        }
+
+        qWarning() << "Applied accent color to all widgets, Highlight now:" << _accentColor;
+    }
 }
 
 //____________________________________________________________________
@@ -2359,7 +2819,8 @@ QRect Style::comboBoxSubControlRect(const QStyleOptionComplex *option, SubContro
     case SC_ComboBoxFrame:
         return flat ? rect : QRect();
     case SC_ComboBoxListBoxPopup:
-        return rect;
+        // 4px gap below combobox, aligned with side edges
+        return rect.adjusted(0, 4, 0, 4);
     case SC_ComboBoxArrow: {
         QRect arrowRect(
             rect.right() - rect.height() + 1,
@@ -2938,10 +3399,10 @@ QSize Style::toolButtonSizeFromContents(const QStyleOption *option, const QSize 
     if (hasInlineIndicator) {
         size.rwidth() += Metrics::ToolButton_InlineIndicatorWidth;
     }
-    size = expandSize(size, marginWidth);
 
-    // We need to add 1px as the toolbutton is smaller by 1px when rendering button frame
-    size = expandSize(size, 1);
+    // Libadwaita: roomy padding — 10px horizontal, minimum 32px height
+    size = expandSize(size, 10, 6);
+    size.setHeight(qMax(size.height(), 32));
 
     return size;
 }
@@ -3009,28 +3470,23 @@ QSize Style::menuItemSizeFromContents(const QStyleOption *option, const QSize &c
         // Looks Gtk adds some additional space to the right
         size.rwidth() += Metrics::MenuItem_MarginWidth * 4;
 
-        return expandSize(size, Metrics::MenuItem_MarginWidth);
+        // KvLibadwaita: frame.top/bottom=4, frame.left/right=12
+        // Use asymmetric expansion: 4px vertical, 12px horizontal
+        size = expandSize(size, Metrics::MenuItem_MarginWidth, Metrics::MenuItem_MarginHeight);
+        return size;
     }
 
     case QStyleOptionMenuItem::Separator: {
         if (menuItemOption->text.isEmpty() && menuItemOption->icon.isNull()) {
             return expandSize(QSize(0, 1), Metrics::MenuItem_MarginWidth, 0);
         } else {
-            // build toolbutton option
-            QStyleOptionToolButton toolButtonOption(separatorMenuItemOption(menuItemOption, widget));
-
-            // make sure height is large enough for icon and text
-            int iconWidth(menuItemOption->maxIconWidth);
+            // Menu section title (e.g. "Toolbars")
+            // Use compact sizing instead of CT_ToolButton which adds 14px margins
             int textHeight(menuItemOption->fontMetrics.height());
-            if (!menuItemOption->icon.isNull()) {
-                size.setHeight(qMax(size.height(), iconWidth));
-            }
-            if (!menuItemOption->text.isEmpty()) {
-                size.setHeight(qMax(size.height(), textHeight));
-                size.setWidth(qMax(size.width(), menuItemOption->fontMetrics.horizontalAdvance(menuItemOption->text)));
-            }
-
-            return sizeFromContents(CT_ToolButton, &toolButtonOption, size, widget);
+            size.setHeight(qMax(size.height(), textHeight));
+            size.rwidth() += menuItemOption->fontMetrics.horizontalAdvance(menuItemOption->text);
+            size.rwidth() += Metrics::MenuItem_MarginWidth * 4;
+            return expandSize(size, Metrics::MenuItem_MarginWidth, Metrics::MenuItem_MarginHeight);
         }
     }
 
@@ -3162,23 +3618,24 @@ QSize Style::tabBarTabSizeFromContents(const QStyleOption *option, const QSize &
         widthIncrement += option->fontMetrics.horizontalAdvance(tabOption->text) * 0.2;
     }
 
-    // compare to minimum size
+    // KvLibadwaita floating pill: 34px height, 8px horiz/vert (frame=8, text.margin=8)
+    constexpr int pillMinHeight = 34;
+    constexpr int pillHorizPad = 8;
+    constexpr int pillVertPad = 8;
+
     bool verticalTabs(tabOption && isVerticalTab(tabOption));
     if (verticalTabs) {
         size.rheight() += widthIncrement;
-        if (hasIcon && !hasText) {
-            size = size.expandedTo(QSize(Metrics::TabBar_TabMinHeight, 0));
-        } else {
-            size = size.expandedTo(QSize(Metrics::TabBar_TabMinHeight, Metrics::TabBar_TabMinWidth));
-        }
+        size = size.expandedTo(QSize(pillMinHeight, 0));
+        size.rwidth() += pillVertPad * 2;
     } else {
         size.rwidth() += widthIncrement;
-        if (hasIcon && !hasText) {
-            size = size.expandedTo(QSize(0, Metrics::TabBar_TabMinHeight));
-        } else {
-            size = size.expandedTo(QSize(Metrics::TabBar_TabMinWidth, Metrics::TabBar_TabMinHeight));
-        }
+        size = size.expandedTo(QSize(0, pillMinHeight));
+        size.rheight() += pillVertPad * 2;
     }
+
+    // horizontal padding for pill look
+    size.rwidth() += pillHorizPad * 2;
 
     return size;
 }
@@ -3234,7 +3691,17 @@ QSize Style::itemViewItemSizeFromContents(const QStyleOption *option, const QSiz
 {
     // call base class
     QSize size(ParentStyleClass::sizeFromContents(CT_ItemViewItem, option, contentsSize, widget));
-    return expandSize(size, Metrics::ItemView_ItemMarginWidth);
+
+    // Combobox popup: roomy vertical padding (total ~32-36px)
+    bool isComboBoxPopup = widget && (widget->inherits("QComboBoxPrivateContainer")
+                                      || widget->parentWidget()->inherits("QComboBoxPrivateContainer"));
+    if (isComboBoxPopup) {
+        size.setHeight(qMax(size.height(), 32));
+        return expandSize(size, Metrics::ItemView_ItemMarginWidth, 6);
+    }
+
+    // Compact vertical spacing for tree rows
+    return expandSize(size, Metrics::ItemView_ItemMarginWidth, 2);
 }
 
 //______________________________________________________________
@@ -3333,12 +3800,24 @@ bool Style::drawFrameLineEditPrimitive(const QStyleOption *option, QPainter *pai
         styleOptions.setColor(palette.currentColorGroup() == QPalette::Disabled ? palette.color(QPalette::Window) : palette.color(QPalette::Base));
         styleOptions.setOutlineColor(Colors::inputOutlineColor(styleOptions));
 
-        // render
-        if (qobject_cast<const QComboBox *>(widget)) {
-            Adwaita::Renderer::renderFlatFrame(styleOptions);
-        } else {
-            Adwaita::Renderer::renderFrame(styleOptions);
+        // Libadwaita 8px rounded line edit field
+        QRectF r = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5);
+        QPainterPath path;
+        path.addRoundedRect(r, 8.0, 8.0);
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(styleOptions.color());
+        painter->drawPath(path);
+
+        if (styleOptions.outlineColor().isValid()) {
+            qreal penWidth = hasFocus ? 2.0 : 1.0;
+            painter->setPen(QPen(styleOptions.outlineColor(), penWidth));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawPath(path);
         }
+        painter->restore();
     }
 
     return true;
@@ -3347,27 +3826,7 @@ bool Style::drawFrameLineEditPrimitive(const QStyleOption *option, QPainter *pai
 //___________________________________________________________________________________
 bool Style::drawFrameFocusRectPrimitive(const QStyleOption *option, QPainter *painter, const QWidget *widget) const
 {
-    if (option->styleObject && option->styleObject->property("elementType") == QLatin1String("button")) {
-        return true;
-    }
-
-    QRectF rect(QRectF(option->rect).adjusted(0, 0, -1, -1));
-    const QPalette &palette(option->palette);
-
-    if (rect.width() < 10) {
-        return true;
-    }
-
-    QColor outlineColor(Colors::mix(palette.color(QPalette::Window), palette.color(QPalette::WindowText), 0.35));
-    QPen pen(outlineColor, 1);
-    pen.setStyle(Qt::CustomDashLine);
-    pen.setDashPattern(QVector<qreal>() << 2 << 1);
-
-    painter->setRenderHint(QPainter::Antialiasing, false);
-
-    painter->setPen(pen);
-    painter->drawRoundedRect(rect, 2, 2);
-
+    // Libadwaita: no dotted focus rectangles
     return true;
 }
 
@@ -3394,6 +3853,7 @@ bool Style::drawFrameMenuPrimitive(const QStyleOption *option, QPainter *painter
 //______________________________________________________________
 bool Style::drawFrameGroupBoxPrimitive(const QStyleOption *option, QPainter *painter, const QWidget *) const
 {
+    // Libadwaita groupboxes are frameless sections with bold headers
     return true;
 }
 
@@ -3500,28 +3960,30 @@ bool Style::drawFrameTabWidgetPrimitive(const QStyleOption *option, QPainter *pa
 bool Style::drawFrameTabBarBasePrimitive(const QStyleOption *option, QPainter *painter, const QWidget *) const
 {
     // tabbar frame used either for 'separate' tabbar, or in 'document mode'
+    // Modern Libadwaita: tabs float freely in a slightly recessed container
 
-    // cast option and check
     const QStyleOptionTabBarBase *tabOption(qstyleoption_cast<const QStyleOptionTabBarBase *>(option));
     if (!tabOption) {
         return true;
     }
 
-    // Style options
-    StyleOptions styleOptions(option->palette, _variant);
-    styleOptions.setState(option->state);
-
-    // get rect, orientation, palette
     QRect rect(option->rect);
-    QColor outline(Colors::frameOutlineColor(styleOptions));
-    QColor background = Colors::tabBarColor(styleOptions);
+    StyleOptions styleOptions(option->palette, _variant);
+    const bool isDark = (_variant == AdwaitaDark);
 
-    // setup painter
-    painter->setBrush(background);
-    painter->setRenderHint(QPainter::Antialiasing, false);
-    painter->setPen(QPen(outline, 1));
+    // Recessed tint: gtkalpha(WindowText, 0.04) for subtle container depth
+    QColor recessedTint = Colors::alphaColor(
+        option->palette.color(QPalette::WindowText), isDark ? 0.06 : 0.04);
 
-    painter->drawRect(rect.adjusted(0, 0, -1, -1));
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(recessedTint);
+    painter->drawRect(rect);
+
+    // Bottom separator line
+    QColor separator(Colors::frameOutlineColor(styleOptions));
+    painter->setPen(QPen(separator, 1));
+    painter->setBrush(Qt::NoBrush);
+    painter->drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom());
 
     return true;
 }
@@ -3721,12 +4183,20 @@ bool Style::drawPanelButtonCommandPrimitive(const QStyleOption *option, QPainter
         styleOptions.setColor(Colors::toolButtonColor(styleOptions));
         Adwaita::Renderer::renderToolButtonFrame(styleOptions);
     } else {
-        // update button color from palette in case button is default
+        // Libadwaita suggested/default button: fill with accent color, contrast text
         QPalette palette(option->palette);
         if (enabled && buttonOption->features & QStyleOptionButton::DefaultButton) {
-            QColor button(palette.color(QPalette::Button));
-            QColor base(palette.color(QPalette::Base));
-            palette.setColor(QPalette::Button, Colors::mix(button, base, 0.7));
+            QColor highlight(palette.color(QPalette::Highlight));
+            QColor fg = Colors::contrastTextColor(highlight);
+            palette.setColor(QPalette::Button, highlight);
+            palette.setColor(QPalette::ButtonText, fg);
+            palette.setColor(QPalette::WindowText, fg);
+            styleOptions.setPalette(palette);
+            styleOptions.setColor(highlight);
+            styleOptions.setActive(enabled && windowActive);
+            styleOptions.setOutlineColor(Colors::buttonOutlineColor(styleOptions));
+            Adwaita::Renderer::renderButtonFrame(styleOptions);
+            return true;
         }
 
         // render
@@ -3742,63 +4212,40 @@ bool Style::drawPanelButtonCommandPrimitive(const QStyleOption *option, QPainter
 //______________________________________________________________
 bool Style::drawPanelButtonToolPrimitive(const QStyleOption *option, QPainter *painter, const QWidget *widget) const
 {
-    // copy palette and rect
     QRect rect(option->rect);
-
-    // store relevant flags
     const State &state(option->state);
-    bool autoRaise(state & State_AutoRaise);
     bool enabled(state & State_Enabled);
-    bool windowActive(state & State_Active);
     bool sunken(state & (State_On | State_Sunken));
     bool mouseOver((state & State_Active) && enabled && (option->state & State_MouseOver));
-    bool hasFocus(enabled && (option->state & (State_HasFocus | State_Sunken)));
+    bool autoRaise(state & State_AutoRaise);
 
-    /*
-     * get animation state
-     * no need to update, this was already done in drawToolButtonComplexControl
-     */
-    AnimationMode mode(_animations->widgetStateEngine().buttonAnimationMode(widget));
-    qreal opacity(_animations->widgetStateEngine().buttonOpacity(widget));
-
-    // Style options
-    StyleOptions styleOptions(option->palette, _variant);
-    styleOptions.setMouseOver(mouseOver);
-    styleOptions.setHasFocus(hasFocus);
-    styleOptions.setSunken(sunken);
-    styleOptions.setOpacity(opacity);
-    styleOptions.setAnimationMode(mode);
-    styleOptions.setPainter(painter);
-    styleOptions.setRect(rect);
-
-    if (!autoRaise || mouseOver || sunken) {
-        // need to check widget for popup mode, because option is not set properly
-        const QToolButton *toolButton(qobject_cast<const QToolButton *>(widget));
-        bool hasPopupMenu(toolButton && toolButton->popupMode() == QToolButton::MenuButtonPopup);
-
-        // render as push button
-        QColor shadow(Colors::shadowColor(styleOptions));
-        QColor outline(Colors::buttonOutlineColor(styleOptions));
-        QColor background(Colors::buttonBackgroundColor(styleOptions));
-
-        // adjust frame in case of menu
-        if (hasPopupMenu) {
-            painter->setClipRect(rect);
-            rect.adjust(0, 0, Metrics::Frame_FrameRadius + 2, 0);
-            rect = visualRect(option, rect);
-        }
-
-        styleOptions.setActive(windowActive);
-        styleOptions.setColor(background);
-        styleOptions.setOutlineColor(outline);
-        styleOptions.setRect(rect);
-        // render
-        Adwaita::Renderer::renderButtonFrame(styleOptions);
-    } else {
-        styleOptions.setColor(Colors::toolButtonColor(styleOptions));
-        Adwaita::Renderer::renderToolButtonFrame(styleOptions);
+    // Libadwaita flat tool buttons: completely transparent when idle
+    if (autoRaise && !mouseOver && !sunken) {
+        return true;
     }
 
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
+
+    const QPalette &pal(option->palette);
+    QColor fill;
+    if (sunken) {
+        fill = Colors::alphaColor(pal.color(QPalette::WindowText), 0.16);
+    } else if (mouseOver) {
+        fill = Colors::alphaColor(pal.color(QPalette::WindowText), 0.10);
+    } else {
+        fill = Colors::alphaColor(pal.color(QPalette::WindowText), 0.07);
+    }
+
+    QRectF r(QRectF(rect).adjusted(1.0, 1.0, -1.0, -1.0));
+    QPainterPath path;
+    path.addRoundedRect(r, 6.0, 6.0);
+
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(fill);
+    painter->drawPath(path);
+
+    painter->restore();
     return true;
 }
 
@@ -3885,14 +4332,47 @@ bool Style::drawPanelMenuPrimitive(const QStyleOption *option, QPainter *painter
     }
 
     const QPalette &palette(option->palette);
-    bool hasAlpha(_helper->hasAlphaChannel(widget));
+    const QRect &rect(option->rect);
 
-    StyleOptions styleOptions(painter, option->rect);
-    styleOptions.setColor(Colors::frameBackgroundColor(StyleOptions(palette, _variant)));
-    styleOptions.setColorVariant(_variant);
-    styleOptions.setOutlineColor(Colors::frameOutlineColor(StyleOptions(palette, _variant)));
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
 
-    Adwaita::Renderer::renderMenuFrame(styleOptions, hasAlpha);
+    // Clear surface with transparent for anti-aliased rounded corners
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(Qt::transparent);
+    painter->drawRect(rect);
+
+    bool isDark = (palette.color(QPalette::Window).lightness() < 128);
+
+    // Clip to widget rect so shadow doesn't extend beyond
+    painter->setClipRect(rect);
+
+    // Menu body — fills the full widget rect minus 1px for AA
+    QRectF bodyRect = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5);
+
+    // ── Soft drop shadow ──
+    // Draw shadow behind the body, extending slightly beyond it
+    int shadowAlpha = isDark ? 60 : 35;
+    for (int i = 3; i >= 1; --i) {
+        QPainterPath shadowPath;
+        QRectF sRect = bodyRect.adjusted(-i, -i * 0.5, i, i);
+        shadowPath.addRoundedRect(sRect, 10.0 + i, 10.0 + i);
+        painter->fillPath(shadowPath, QColor(0, 0, 0, shadowAlpha / (i + 1)));
+    }
+
+    // ── Menu body ──
+    QPainterPath menuPath;
+    menuPath.addRoundedRect(bodyRect, 10.0, 10.0);
+    QColor menuBg = isDark ? QColor("#383838") : palette.color(QPalette::Base);
+    painter->fillPath(menuPath, menuBg);
+
+    // ── Adaptive hairline border ──
+    QColor outline = isDark ? QColor(255, 255, 255, 25) : QColor(0, 0, 0, 30);
+    painter->setPen(QPen(outline, 1.0));
+    painter->setBrush(Qt::NoBrush);
+    painter->drawPath(menuPath);
+
+    painter->restore();
 
     return true;
 }
@@ -3915,7 +4395,8 @@ bool Style::drawPanelTipLabelPrimitive(const QStyleOption *option, QPainter *pai
     StyleOptions styleOptions(painter, option->rect);
     styleOptions.setColor(background);
     styleOptions.setColorVariant(_variant);
-    styleOptions.setOutlineColor(Colors::transparentize(QColor("black"), 0.3));
+    // Use palette-derived shadow color instead of hardcoded black
+    styleOptions.setOutlineColor(Colors::transparentize(palette.color(QPalette::Shadow), 0.3));
 
     Adwaita::Renderer::renderMenuFrame(styleOptions, hasAlpha);
     return true;
@@ -3930,14 +4411,24 @@ bool Style::drawPanelItemViewRowPrimitive(const QStyleOption *option, QPainter *
         return false;
     }
 
+    // Libadwaita flat row: NO gradient, NO fill for unselected items
     QPalette::ColorGroup cg = (widget ? widget->isEnabled() : (vopt->state & QStyle::State_Enabled))
                               ? QPalette::Normal : QPalette::Disabled;
     if (cg == QPalette::Normal && !(vopt->state & QStyle::State_Active)) {
         cg = QPalette::Inactive;
     }
 
-    if ((vopt->state & QStyle::State_Selected) &&  proxy()->styleHint(QStyle::SH_ItemView_ShowDecorationSelected, option, widget)) {
-        painter->fillRect(vopt->rect, vopt->palette.color(cg, QPalette::Highlight));
+    if ((vopt->state & QStyle::State_Selected) && proxy()->styleHint(QStyle::SH_ItemView_ShowDecorationSelected, option, widget)) {
+        // Flat selection fill — no gradient
+        painter->setRenderHint(QPainter::Antialiasing, false);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(vopt->palette.color(cg, QPalette::Highlight));
+        painter->drawRect(vopt->rect);
+    } else if (vopt->state & QStyle::State_Children) {
+        // Section/category headers: fill with window background to remove gray
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(vopt->palette.color(cg, QPalette::Window));
+        painter->drawRect(vopt->rect);
     }
 
     return true;
@@ -3996,12 +4487,27 @@ bool Style::drawPanelItemViewItemPrimitive(const QStyleOption *option, QPainter 
         color = palette.color(colorGroup, QPalette::Highlight);
     }
 
+    // Sidebar detection: check property set during polish()
+    bool isSidebar = widget && widget->property("isSidebar").toBool();
+
+    // Combobox popup detection
+    bool isComboBoxPopup = widget && (widget->inherits("QComboBoxPrivateContainer")
+                                      || widget->parentWidget()->inherits("QComboBoxPrivateContainer"));
+
     // render
     StyleOptions styleOptions(painter, rect);
-    styleOptions.setColor(color);
-    styleOptions.setColorVariant(_variant);
-    Adwaita::Renderer::renderSelection(styleOptions);
 
+    // Subtle gray pill for all selected items
+    constexpr qreal pillRadius = 6.0;
+    bool isDark = palette.color(QPalette::Window).lightness() < 128;
+    QColor bgColor = Colors::alphaColor(palette.color(QPalette::WindowText), isDark ? 0.14 : 0.08);
+    QRectF pill(QRectF(rect).adjusted(4.0, 2.0, -4.0, -2.0));
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(bgColor);
+    painter->drawRoundedRect(pill, pillRadius, pillRadius);
+    painter->restore();
     return true;
 }
 
@@ -4072,12 +4578,12 @@ bool Style::drawIndicatorCheckBoxPrimitive(const QStyleOption *option, QPainter 
         tickColor = Colors::checkBoxIndicatorColor(styleOptions);
     }
     // render
+    styleOptions.setCheckboxState(checkBoxState);
     styleOptions.setActive(enabled && windowActive);
     styleOptions.setColor(Colors::indicatorBackgroundColor(styleOptions));
-    styleOptions.setCheckboxState(checkBoxState);
     styleOptions.setOutlineColor(Colors::indicatorOutlineColor(styleOptions));
 
-    Adwaita::Renderer::renderCheckBox(styleOptions, tickColor, animation);
+    Adwaita::Renderer::renderCheckBox(styleOptions, Qt::white, animation);
     return true;
 }
 
@@ -4145,13 +4651,14 @@ bool Style::drawIndicatorRadioButtonPrimitive(const QStyleOption *option, QPaint
     }
 
     // render
+    styleOptions.setRadioButtonState(radioButtonState);
+    styleOptions.setCheckboxState(checked ? CheckOn : CheckOff);
     styleOptions.setActive(enabled && windowActive);
     styleOptions.setColor(Colors::indicatorBackgroundColor(styleOptions));
     styleOptions.setInMenu(false);
     styleOptions.setOutlineColor(Colors::indicatorOutlineColor(styleOptions));
-    styleOptions.setRadioButtonState(radioButtonState);
 
-    Adwaita::Renderer::renderRadioButton(styleOptions, tickColor, animation);
+    Adwaita::Renderer::renderRadioButton(styleOptions, Qt::white, animation);
 
     return true;
 }
@@ -4381,22 +4888,26 @@ bool Style::drawIndicatorToolBarSeparatorPrimitive(const QStyleOption *option, Q
         return true;
     }
 
-    // store rect and palette
     const QRect &rect(option->rect);
-
-    // store state
     const State &state(option->state);
     bool separatorIsVertical(state & State_Horizontal);
+    const QPalette &pal(option->palette);
+    QColor color = Colors::alphaColor(pal.color(QPalette::WindowText), 0.12);
 
-    // Style options
-    StyleOptions styleOptions(option->palette, _variant);
-    styleOptions.setPainter(painter);
-    styleOptions.setRect(rect);
-    styleOptions.setColor(Colors::separatorColor(styleOptions));
+    painter->save();
+    painter->setPen(QPen(color, 1.0));
 
-    // define color and render
-    Adwaita::Renderer::renderSeparator(styleOptions, separatorIsVertical);
+    if (separatorIsVertical) {
+        // Horizontal toolbar → vertical line (centered in rect)
+        int x = rect.center().x();
+        painter->drawLine(x, rect.top(), x, rect.bottom());
+    } else {
+        // Vertical toolbar → horizontal line (centered in rect)
+        int y = rect.center().y();
+        painter->drawLine(rect.left(), y, rect.right(), y);
+    }
 
+    painter->restore();
     return true;
 }
 
@@ -4411,39 +4922,54 @@ bool Style::drawIndicatorBranchPrimitive(const QStyleOption *option, QPainter *p
     const State &state(option->state);
     bool reverseLayout(option->direction == Qt::RightToLeft);
 
-    //draw expander
+    // draw expander chevron
     int expanderAdjust = 0;
     if (state & State_Children) {
-        // state
         bool expanderOpen(state & State_Open);
         bool enabled(state & State_Enabled);
-        bool mouseOver((state & State_Active) && enabled && (state & State_MouseOver));
 
-        // expander rect
         int expanderSize = qMin(rect.width(), rect.height());
         expanderSize = qMin(expanderSize, int(Metrics::ItemView_ArrowSize));
         expanderAdjust = expanderSize / 2 + 1;
         QRect arrowRect = centerRect(rect, expanderSize, expanderSize);
+        QPointF center = QPointF(arrowRect.center());
 
-        // get orientation from option
-        ArrowOrientation orientation;
+        // Libadwaita chevron: clean stroke-based, 70% WindowText opacity
+        qreal halfSize = expanderSize * 0.28;
+        QColor chevronColor = Colors::alphaColor(palette.color(QPalette::WindowText), 0.7);
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+
+        QPen pen(chevronColor, 1.5);
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+        painter->setPen(pen);
+        painter->setBrush(Qt::NoBrush);
+
         if (expanderOpen) {
-            orientation = ArrowDown;
-        } else if (reverseLayout) {
-            orientation = ArrowLeft;
+            // down chevron: two strokes forming a V shape
+            painter->drawLine(QPointF(center.x() - halfSize, center.y() - halfSize * 0.5),
+                              QPointF(center.x(), center.y() + halfSize * 0.5));
+            painter->drawLine(QPointF(center.x(), center.y() + halfSize * 0.5),
+                              QPointF(center.x() + halfSize, center.y() - halfSize * 0.5));
         } else {
-            orientation = ArrowRight;
+            // right chevron (or left in RTL): two strokes forming a > shape
+            QPointF start, mid, end;
+            if (reverseLayout) {
+                start = QPointF(center.x() + halfSize * 0.5, center.y() - halfSize);
+                mid = QPointF(center.x() - halfSize * 0.5, center.y());
+                end = QPointF(center.x() + halfSize * 0.5, center.y() + halfSize);
+            } else {
+                start = QPointF(center.x() - halfSize * 0.5, center.y() - halfSize);
+                mid = QPointF(center.x() + halfSize * 0.5, center.y());
+                end = QPointF(center.x() - halfSize * 0.5, center.y() + halfSize);
+            }
+            painter->drawLine(start, mid);
+            painter->drawLine(mid, end);
         }
 
-        // Style options
-        StyleOptions styleOptions(option->palette, _variant);
-        styleOptions.setColorRole(QPalette::Text);
-        styleOptions.setPainter(painter);
-        styleOptions.setRect(arrowRect);
-        styleOptions.setColor(mouseOver ? Colors::hoverColor(StyleOptions(palette, _variant)) : Colors::arrowOutlineColor(styleOptions));
-
-        // render
-        Adwaita::Renderer::renderArrow(styleOptions, orientation);
+        painter->restore();
     }
 
     // tree branches
@@ -4452,7 +4978,7 @@ bool Style::drawIndicatorBranchPrimitive(const QStyleOption *option, QPainter *p
     }
 
     QPoint center(rect.center());
-    QColor lineColor(Colors::mix(palette.color(QPalette::Base), palette.color(QPalette::Text), 0.25));
+    QColor lineColor(Colors::alphaColor(palette.color(QPalette::WindowText), 0.12));
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
     painter->translate(0.5, 0.5);
@@ -4462,7 +4988,6 @@ bool Style::drawIndicatorBranchPrimitive(const QStyleOption *option, QPainter *p
         painter->drawLine(line);
     }
 
-    // The right/left (depending on direction) line gets drawn if we have an item
     if (state & State_Item) {
         const QLineF line = reverseLayout ?
                             QLineF(QPointF(rect.left(), center.y()), QPointF(center.x() - expanderAdjust, center.y())) :
@@ -4470,7 +4995,6 @@ bool Style::drawIndicatorBranchPrimitive(const QStyleOption *option, QPainter *p
         painter->drawLine(line);
     }
 
-    // The bottom if we have a sibling
     if (state & State_Sibling) {
         QLineF line(QPointF(center.x(), center.y() + expanderAdjust), QPointF(center.x(), rect.bottom()));
         painter->drawLine(line);
@@ -4491,7 +5015,15 @@ bool Style::drawPushButtonLabelControl(const QStyleOption *option, QPainter *pai
 
     // copy rect and palette
     const QRect &rect(option->rect);
-    const QPalette &palette(option->palette);
+    QPalette palette(option->palette);
+
+    // Force contrast text color for default/suggested buttons
+    if (buttonOption->features & QStyleOptionButton::DefaultButton) {
+        QColor bg = palette.color(QPalette::Highlight);
+        QColor fg = Colors::contrastTextColor(bg);
+        palette.setColor(QPalette::ButtonText, fg);
+        palette.setColor(QPalette::WindowText, fg);
+    }
 
     // state
     const State &state(option->state);
@@ -4606,13 +5138,6 @@ bool Style::drawPushButtonLabelControl(const QStyleOption *option, QPainter *pai
 
     // render text
     if (hasText && textRect.isValid()) {
-        if (enabled && !sunken && !mouseOver && !flat) {
-            if (_dark) {
-                drawItemText(painter, textRect.adjusted(0, -1, 0, -1), textFlags, palette, false, buttonOption->text, QPalette::Dark);
-            } else {
-                drawItemText(painter, textRect.adjusted(0, 1, 0, 1), textFlags, palette, false, buttonOption->text, QPalette::Light);
-            }
-        }
         drawItemText(painter, textRect, textFlags, palette, enabled, buttonOption->text, textRole);
     }
 
@@ -4867,19 +5392,106 @@ bool Style::drawItemViewItemControl(const QStyleOption *option, QPainter *painte
         return true;
     }
 
-    QStyleOptionViewItem op(*vopt);
+    QStyleOptionViewItem opt(*vopt);
 
-    if (_helper->isWindowActive(widget)) {
-        // No custom text color used, we can do our HACK
-        QPalette pal = op.palette;
-        if (!hasCustomTextColors(pal)) {
-            pal.setColor(QPalette::Inactive, QPalette::Text, pal.color(QPalette::Active, QPalette::Text));
-            op.palette = pal;
+    if (opt.state & State_Enabled) {
+        opt.palette.setCurrentColorGroup(QPalette::Active);
+    }
+
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
+
+    constexpr qreal selectionRadius = 6.0;
+    constexpr qreal selectionHInset = 4.0;
+    constexpr qreal selectionVInset = 2.0;
+
+    // Combobox popup: subtle gray selection, not full highlight
+    bool isComboBoxPopup = widget && (widget->inherits("QComboBoxPrivateContainer")
+                                      || (widget->parentWidget() && widget->parentWidget()->inherits("QComboBoxPrivateContainer")));
+
+    bool isDark = opt.palette.color(QPalette::Window).lightness() < 128;
+
+    if (opt.state & State_Selected) {
+        QRectF selRect(QRectF(opt.rect).adjusted(selectionHInset, selectionVInset, -selectionHInset, -selectionVInset));
+
+        // Subtle gray pill for all item view selections — text stays dark
+        QColor bgColor = Colors::alphaColor(opt.palette.color(QPalette::WindowText), isDark ? 0.14 : 0.08);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(bgColor);
+        painter->drawRoundedRect(selRect, selectionRadius, selectionRadius);
+        opt.palette.setColor(QPalette::Text, opt.palette.color(QPalette::WindowText));
+        opt.palette.setColor(QPalette::HighlightedText, opt.palette.color(QPalette::WindowText));
+    } else if ((opt.state & State_MouseOver) && (opt.state & State_Enabled)) {
+        QRectF hoverRect(QRectF(opt.rect).adjusted(selectionHInset, selectionVInset, -selectionHInset, -selectionVInset));
+        QColor hoverColor = Colors::alphaColor(opt.palette.color(QPalette::WindowText), isDark ? 0.07 : 0.04);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(hoverColor);
+        painter->drawRoundedRect(hoverRect, selectionRadius, selectionRadius);
+    }
+
+    painter->setRenderHint(QPainter::Antialiasing, false);
+
+    // Clip to item rect
+    painter->setClipRect(opt.rect);
+
+    const bool hasIcon = !opt.icon.isNull();
+
+    if (hasIcon) {
+        const int iconSpacing = 4;
+        const int iconSize = proxy()->pixelMetric(PM_SmallIconSize, &opt, widget);
+        const int iconX = opt.rect.left();
+        const int iconY = opt.rect.center().y() - iconSize / 2;
+
+        QPixmap pixmap = opt.icon.pixmap(iconSize,
+                                          (opt.state & State_Enabled) ? QIcon::Normal : QIcon::Disabled);
+        painter->drawPixmap(QRect(iconX, iconY, iconSize, iconSize), pixmap);
+
+        QRect textRect(iconX + iconSize + iconSpacing, opt.rect.top(),
+                       opt.rect.right() - iconX - iconSize - iconSpacing,
+                       opt.rect.height());
+        if (!opt.text.isEmpty()) {
+            QPalette::ColorRole textRole = (opt.state & State_Selected) ? QPalette::HighlightedText : QPalette::Text;
+            int textFlags = Qt::AlignVCenter | Qt::TextHideMnemonic;
+            if (opt.displayAlignment & Qt::AlignLeft) textFlags |= Qt::AlignLeft;
+            else if (opt.displayAlignment & Qt::AlignRight) textFlags |= Qt::AlignRight;
+            else textFlags |= Qt::AlignLeft;
+            drawItemText(painter, textRect, textFlags, opt.palette,
+                         opt.state & State_Enabled, opt.text, textRole);
+        }
+    } else {
+        // Text only — add left/right padding for readability
+        QRect textRect = opt.rect.adjusted(6, 0, -6, 0);
+        if (!opt.text.isEmpty()) {
+            QPalette::ColorRole textRole = (opt.state & State_Selected) ? QPalette::HighlightedText : QPalette::Text;
+            int textFlags = Qt::AlignVCenter | Qt::TextHideMnemonic;
+            if (opt.displayAlignment & Qt::AlignLeft) textFlags |= Qt::AlignLeft;
+            else if (opt.displayAlignment & Qt::AlignRight) textFlags |= Qt::AlignRight;
+            else textFlags |= Qt::AlignLeft;
+            drawItemText(painter, textRect, textFlags, opt.palette,
+                         opt.state & State_Enabled, opt.text, textRole);
+        }
+        // Draw checkmark for selected combobox popup items
+        if (isComboBoxPopup && (opt.state & State_Selected)) {
+            const int checkSize = 14;
+            const int checkX = opt.rect.right() - checkSize - 8;
+            const int checkY = opt.rect.center().y() - checkSize / 2;
+            QRectF checkRect(checkX, checkY, checkSize, checkSize);
+
+            painter->save();
+            painter->setRenderHint(QPainter::Antialiasing, true);
+            painter->setPen(QPen(opt.palette.color(QPalette::WindowText), 2.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter->setBrush(Qt::NoBrush);
+
+            QPainterPath checkPath;
+            checkPath.moveTo(checkRect.left() + checkRect.width() * 0.20, checkRect.top() + checkRect.height() * 0.50);
+            checkPath.lineTo(checkRect.left() + checkRect.width() * 0.40, checkRect.top() + checkRect.height() * 0.76);
+            checkPath.lineTo(checkRect.left() + checkRect.width() * 0.82, checkRect.top() + checkRect.height() * 0.26);
+            painter->drawPath(checkPath);
+            painter->restore();
         }
     }
 
-    ParentStyleClass::drawControl(CE_ItemViewItem, &op, painter, widget);
-
+    painter->restore();
     return true;
 }
 
@@ -4903,7 +5515,6 @@ bool Style::drawMenuBarEmptyArea(const QStyleOption *option, QPainter *painter, 
 //___________________________________________________________________________________
 bool Style::drawMenuBarItemControl(const QStyleOption *option, QPainter *painter, const QWidget *) const
 {
-
     // cast option and check
     const QStyleOptionMenuItem *menuItemOption = qstyleoption_cast<const QStyleOptionMenuItem *>(option);
     if (!menuItemOption)
@@ -4917,38 +5528,43 @@ bool Style::drawMenuBarItemControl(const QStyleOption *option, QPainter *painter
     const State &state(option->state);
     bool enabled(state & State_Enabled);
     bool sunken(enabled && (state & State_Sunken));
-    bool useStrongFocus(Adwaita::Config::MenuItemDrawStrongFocus);
+    bool mouseOver(enabled && (state & State_MouseOver));
 
     painter->save();
-    painter->setRenderHint(QPainter::Antialiasing, false);
+    painter->setRenderHint(QPainter::Antialiasing, true);
 
+    // clear background
     painter->setBrush(palette.window().color());
     painter->setPen(Qt::NoPen);
     painter->drawRect(rect);
 
-    painter->setBrush(Qt::NoBrush);
-    painter->setPen(Colors::mix(palette.color(QPalette::Window), palette.color(QPalette::Shadow), 0.2));
+    // Libadwaita menubar hover: subtle rounded pill
+    if (sunken || mouseOver) {
+        constexpr qreal hoverRadius = 6.0;
+        constexpr qreal hPadding = 3.0;
+        constexpr qreal vPadding = 2.0;
 
-    painter->drawLine(rect.bottomLeft(), rect.bottomRight());
-    painter->restore();
+        QRectF hoverRect(rect);
+        hoverRect.adjust(hPadding, vPadding, -hPadding, -vPadding);
 
-    // render hover and focus
-    if (useStrongFocus && sunken) {
-        StyleOptions styleOptions(painter, QRect(rect.left(), rect.bottom() - 2, rect.width(), 3));
-        styleOptions.setColorVariant(_variant);
-        styleOptions.setOutlineColor(Colors::focusColor(StyleOptions(palette, _variant)));
-        styleOptions.setColor(palette.color(QPalette::Highlight));
-        Adwaita::Renderer::renderFocusRect(styleOptions);
+        // Use white/black overlay for visibility regardless of theme
+        bool isDark = (palette.color(QPalette::Window).lightness() < 128);
+        QColor hoverColor = isDark ? QColor(255, 255, 255, 20) : QColor(0, 0, 0, 20);
+
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(hoverColor);
+        painter->drawRoundedRect(hoverRect, hoverRadius, hoverRadius);
     }
 
     // get text rect
     int textFlags(Qt::AlignCenter | _mnemonics->textFlags());
     QRect textRect = option->fontMetrics.boundingRect(rect, textFlags, menuItemOption->text);
 
-    // render text
-    const QPalette::ColorRole role = (useStrongFocus && sunken) ? QPalette::Link : QPalette::WindowText;
+    // render text — flat, no shadow
+    const QPalette::ColorRole role = QPalette::WindowText;
     drawItemText(painter, textRect, textFlags, palette, enabled, menuItemOption->text, role);
 
+    painter->restore();
     return true;
 }
 
@@ -5006,16 +5622,24 @@ bool Style::drawMenuItemControl(const QStyleOption *option, QPainter *painter, c
     bool useStrongFocus(Adwaita::Config::MenuItemDrawStrongFocus);
 
     // render hover and focus
+    // adw-gtk3: menuitem:hover { background-image: alpha(currentColor, 0.08); }
     if (useStrongFocus && (selected || sunken)) {
+        const QColor fg = palette.color(QPalette::WindowText);
+        const QColor menuBg = palette.color(QPalette::Window);
+        // Blend foreground at 8% onto menu background
+        QColor highlight = Colors::mix(menuBg, fg, 0.08);
         StyleOptions styleOptions(painter, rect);
-        styleOptions.setColor(Colors::selectedMenuColor(StyleOptions(palette, _variant)));
+        styleOptions.setColor(highlight);
         styleOptions.setColorVariant(_variant);
-        styleOptions.setOutlineColor(Qt::transparent);
-        Adwaita::Renderer::renderFocusRect(styleOptions);
+        Adwaita::Renderer::renderMenuItemHighlight(styleOptions);
     }
 
     // get rect available for contents
-    QRect contentsRect(insideMargin(rect,  Metrics::MenuItem_MarginWidth));
+    // KvLibadwaita: frame.top/bottom=4, frame.left/right=12
+    QRect contentsRect(rect.left() + Metrics::MenuItem_MarginWidth,
+                       rect.top() + Metrics::MenuItem_MarginHeight,
+                       rect.width() - 2 * Metrics::MenuItem_MarginWidth,
+                       rect.height() - 2 * Metrics::MenuItem_MarginHeight);
 
     // define relevant rectangles
     // checkbox
@@ -5295,7 +5919,7 @@ bool Style::drawProgressBarContentsControl(const QStyleOption *option, QPainter 
         StyleOptions styleOptions(painter, rect);
         styleOptions.setColor(palette.color(QPalette::Highlight));
         styleOptions.setColorVariant(_variant);
-        styleOptions.setOutlineColor(palette.color(QPalette::Highlight));
+        styleOptions.setOutlineColor(QColor());
         Adwaita::Renderer::renderProgressBarContents(styleOptions);
         painter->setClipRegion(oldClipRegion);
     }
@@ -5307,6 +5931,7 @@ bool Style::drawProgressBarContentsControl(const QStyleOption *option, QPainter 
 bool Style::drawProgressBarGrooveControl(const QStyleOption *option, QPainter *painter, const QWidget *) const
 {
     const QPalette &palette(option->palette);
+    const bool isDark = (_variant == AdwaitaDark);
 
     // Style options
     StyleOptions styleOptions(option->palette, _variant);
@@ -5316,8 +5941,9 @@ bool Style::drawProgressBarGrooveControl(const QStyleOption *option, QPainter *p
     styleOptions.setAnimationMode(AnimationNone);
     styleOptions.setPainter(painter);
     styleOptions.setRect(option->rect);
-    styleOptions.setColor(Colors::mix(Colors::buttonOutlineColor(styleOptions), palette.color(QPalette::Window)));
-    styleOptions.setOutlineColor(Colors::mix(Colors::buttonOutlineColor(styleOptions), palette.color(QPalette::Window)));
+    QColor grooveColor = Colors::alphaColor(palette.color(QPalette::WindowText), isDark ? 0.15 : 0.12);
+    styleOptions.setColor(grooveColor);
+    styleOptions.setOutlineColor(QColor());
 
     Adwaita::Renderer::renderProgressBarGroove(styleOptions);
     return true;
@@ -5660,15 +6286,17 @@ bool Style::drawShapedFrameControl(const QStyleOption *option, QPainter *painter
             return true;
         }
 
-        break;
+        // Libadwaita flat panel: no bevel, no fallback
+        return true;
     }
 
     default:
-        break;
+        // Libadwaita: no bevel, no fallback
+        return true;
 
     }
 
-    return false;
+    return true;
 }
 
 //___________________________________________________________________________________
@@ -5687,6 +6315,35 @@ bool Style::drawRubberBandControl(const QStyleOption *option, QPainter *painter,
 }
 
 //___________________________________________________________________________________
+bool Style::drawHeaderControl(const QStyleOption *option, QPainter *painter, const QWidget *widget) const
+{
+    // CE_Header: composite control. Draw flat background + label, no parent fallback.
+    const QPalette &palette(option->palette);
+    const QRect &rect(option->rect);
+    const State &state(option->state);
+    bool enabled(state & State_Enabled);
+    bool mouseOver((state & State_Active) && enabled && (state & State_MouseOver));
+    bool sunken(enabled && (state & State_Sunken));
+
+    painter->setRenderHint(QPainter::Antialiasing, false);
+
+    // flat background: white, no gradient
+    painter->setBrush(palette.color(QPalette::Base));
+    painter->setPen(Qt::NoPen);
+    painter->drawRect(rect);
+
+    // subtle hairline at bottom
+    painter->setBrush(Qt::NoBrush);
+    painter->setPen(Colors::alphaColor(palette.color(QPalette::WindowText), 0.08));
+    painter->drawLine(rect.bottomLeft(), rect.bottomRight());
+
+    // draw label text
+    drawControl(CE_HeaderLabel, option, painter, widget);
+
+    return true;
+}
+
+//___________________________________________________________________________________
 bool Style::drawHeaderSectionControl(const QStyleOption *option, QPainter *painter, const QWidget *widget) const
 {
     const QRect &rect(option->rect);
@@ -5694,6 +6351,7 @@ bool Style::drawHeaderSectionControl(const QStyleOption *option, QPainter *paint
     const State &state(option->state);
     bool enabled(state & State_Enabled);
     bool mouseOver((state & State_Active) && enabled && (state & State_MouseOver));
+    bool sunken(enabled && (state & State_Sunken));
 
     const QStyleOptionHeader *headerOption(qstyleoption_cast<const QStyleOptionHeader *>(option));
     if (!headerOption) {
@@ -5708,47 +6366,23 @@ bool Style::drawHeaderSectionControl(const QStyleOption *option, QPainter *paint
     // update animation state
     _animations->headerViewEngine().updateState(widget, rect.topLeft(), mouseOver);
 
-    QBrush color = palette.base();
-
+    // Libadwaita flat header: white background, no gradient
     painter->setRenderHint(QPainter::Antialiasing, false);
-    painter->setBrush(color);
     painter->setPen(Qt::NoPen);
+    painter->setBrush(palette.color(QPalette::Base));
     painter->drawRect(rect);
 
-    // outline
+    // subtle hairline separator only at bottom for horizontal headers
     painter->setBrush(Qt::NoBrush);
-    painter->setPen(Colors::alphaColor(palette.color(QPalette::WindowText), 0.2));
+    painter->setPen(Colors::alphaColor(palette.color(QPalette::WindowText), 0.08));
 
-    if (isCorner) {
-        if (reverseLayout) {
-            painter->drawPoint(rect.bottomLeft());
-        } else {
-            painter->drawPoint(rect.bottomRight());
-        }
-    } else if (horizontal) {
+    if (isCorner || horizontal) {
         painter->drawLine(rect.bottomLeft(), rect.bottomRight());
     } else {
         if (reverseLayout) {
             painter->drawLine(rect.topLeft(), rect.bottomLeft());
         } else {
             painter->drawLine(rect.topRight(), rect.bottomRight());
-        }
-    }
-
-    // separators
-    if (horizontal) {
-        if (headerOption->section != 0 || isFirst) {
-            if (reverseLayout) {
-                painter->drawLine(rect.topLeft(), rect.bottomLeft() - QPoint(0, 1));
-            } else {
-                painter->drawLine(rect.topRight(), rect.bottomRight() - QPoint(0, 1));
-            }
-        }
-    } else {
-        if (reverseLayout) {
-            painter->drawLine(rect.bottomLeft() + QPoint(1, 0), rect.bottomRight());
-        } else {
-            painter->drawLine(rect.bottomLeft(), rect.bottomRight() - QPoint(1, 0));
         }
     }
 
@@ -5794,22 +6428,21 @@ bool Style::drawHeaderLabelControl(const QStyleOption *option, QPainter *painter
 //___________________________________________________________________________________
 bool Style::drawHeaderEmptyAreaControl(const QStyleOption *option, QPainter *painter, const QWidget *) const
 {
-    // use the same background as in drawHeaderPrimitive
     const QRect &rect(option->rect);
-    QPalette palette(option->palette);
+    const QPalette &palette(option->palette);
 
     bool horizontal(option->state & QStyle::State_Horizontal);
     bool reverseLayout(option->direction == Qt::RightToLeft);
 
-    // fill
+    // Libadwaita flat header empty area: white background, no gradient
     painter->setRenderHint(QPainter::Antialiasing, false);
-    painter->setBrush(palette.color(QPalette::Base));
     painter->setPen(Qt::NoPen);
+    painter->setBrush(palette.color(QPalette::Base));
     painter->drawRect(rect);
 
-    // outline
+    // subtle hairline
     painter->setBrush(Qt::NoBrush);
-    painter->setPen(Colors::alphaColor(palette.color(QPalette::ButtonText), 0.1));
+    painter->setPen(Colors::alphaColor(palette.color(QPalette::WindowText), 0.08));
 
     if (horizontal) {
         painter->drawLine(rect.bottomLeft(), rect.bottomRight());
@@ -5865,21 +6498,21 @@ bool Style::drawTabBarTabLabelControl(const QStyleOption *option, QPainter *pain
         }
 
         QFont font = painter->font();
-        font.setBold(true);
+        font.setBold(tab->state & State_Selected);
         painter->setFont(font);
         if (!(tab->state & State_Enabled)) {
             if (tab->state & State_Selected) {
-                painter->setPen(Colors::mix(option->palette.brush(QPalette::Text).color(), option->palette.brush(QPalette::Window).color(), 0.3));
+                painter->setPen(Colors::alphaColor(option->palette.brush(QPalette::WindowText).color(), 0.5));
             } else {
-                painter->setPen(Colors::mix(option->palette.brush(QPalette::Text).color(), option->palette.brush(QPalette::Window).color(), 0.4));
+                painter->setPen(Colors::alphaColor(option->palette.brush(QPalette::WindowText).color(), 0.4));
             }
         } else {
             if (tab->state & State_Selected) {
                 painter->setPen(option->palette.brush(QPalette::WindowText).color());
             } else if (tab->state & State_Active && tab->state & State_MouseOver) {
-                painter->setPen(Colors::mix(option->palette.brush(QPalette::Dark).color(), option->palette.brush(QPalette::Text).color(), 0.7));
+                painter->setPen(Colors::alphaColor(option->palette.brush(QPalette::WindowText).color(), 0.85));
             } else {
-                painter->setPen(Colors::mix(option->palette.brush(QPalette::Dark).color(), option->palette.brush(QPalette::Text).color(), 0.6));
+                painter->setPen(Colors::alphaColor(option->palette.brush(QPalette::WindowText).color(), 0.7));
             }
         }
 
@@ -6044,17 +6677,21 @@ bool Style::drawTabBarTabShapeControl(const QStyleOption *option, QPainter *pain
     StyleOptions styleOptions(option->palette, _variant);
     styleOptions.setState(option->state);
 
-    // underline
-    QColor underline(enabled && selected ? Colors::focusColor(StyleOptions(palette, _variant)) : selected || mouseOver ? option->palette.color(QPalette::Window).darker() : Qt::transparent);
+    // Libadwaita floating pill tab
+    const bool isDark = (_variant == AdwaitaDark);
+    QColor background;
+    QColor outline;
 
-    // outline
-    QColor outline = QColor();
-    if (selected && widget && widget->property("movable").toBool()) {
-        outline = Colors::frameOutlineColor(StyleOptions(palette, _variant));
+    if (selected) {
+        background = Colors::cardBackgroundColor(styleOptions);
+        outline = Colors::frameOutlineColor(styleOptions);
+        if (!enabled) {
+            background.setAlphaF(background.alphaF() * 0.5);
+            outline.setAlphaF(outline.alphaF() * 0.5);
+        }
+    } else if (mouseOver) {
+        background = Colors::alphaColor(palette.color(QPalette::WindowText), isDark ? 0.06 : 0.04);
     }
-
-    // background
-    QColor background = Colors::tabBarColor(styleOptions);
 
     // render
     QRegion oldRegion(painter->clipRegion());
@@ -6062,10 +6699,10 @@ bool Style::drawTabBarTabShapeControl(const QStyleOption *option, QPainter *pain
 
     styleOptions.setPainter(painter);
     styleOptions.setRect(rect);
-    styleOptions.setColor(underline);
+    styleOptions.setColor(Qt::transparent);
     styleOptions.setOutlineColor(outline);
 
-    Adwaita::Renderer::renderTabBarTab(styleOptions, background, corners, widget && widget->property("movable").toBool());
+    Adwaita::Renderer::renderTabBarTab(styleOptions, background, AllCorners, false);
     painter->setClipRegion(oldRegion);
 
     return true;
@@ -6169,11 +6806,6 @@ bool Style::drawToolBoxTabShapeControl(const QStyleOption *option, QPainter *pai
     bool mouseOver((flags & State_Active) && enabled && !selected && (flags & State_MouseOver));
 
     // update animation state
-    /*
-     * the proper widget ( the toolbox tab ) is not passed as argument by Qt.
-     * What is passed is the toolbox directly. To implement animations properly,
-     *the painter->device() is used instead
-     */
     bool isAnimated(false);
     qreal opacity(AnimationData::OpacityInvalid);
     QPaintDevice *device = painter->device();
@@ -6183,28 +6815,38 @@ bool Style::drawToolBoxTabShapeControl(const QStyleOption *option, QPainter *pai
         opacity = _animations->toolBoxEngine().opacity(device);
     }
 
-    // Style options
-    StyleOptions styleOptions(option->palette, _variant);
-    styleOptions.setMouseOver(mouseOver);
-    styleOptions.setHasFocus(false);
-    styleOptions.setOpacity(opacity);
-    styleOptions.setAnimationMode(isAnimated ? AnimationHover : AnimationNone);
+    // Libadwaita flat toolbox tab: subtle tint surface, no frame outline
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, false);
 
-    // color
-    QColor outline;
     if (selected) {
-        outline = Colors::focusColor(StyleOptions(palette, _variant));
-    } else {
-        outline = Colors::frameOutlineColor(styleOptions);
+        painter->setBrush(Colors::alphaColor(palette.color(QPalette::WindowText), 0.09));
+        painter->setPen(Qt::NoPen);
+        painter->drawRect(rect);
+    } else if (mouseOver) {
+        qreal hoverOpacity = isAnimated ? opacity : 1.0;
+        QColor hoverBg = Colors::alphaColor(palette.color(QPalette::WindowText), 0.06 * hoverOpacity);
+        painter->setBrush(hoverBg);
+        painter->setPen(Qt::NoPen);
+        painter->drawRect(rect);
     }
 
-    styleOptions.setPainter(painter);
-    styleOptions.setRect(rect);
-    styleOptions.setColor(outline);
+    // subtle hairline at bottom
+    painter->setBrush(Qt::NoBrush);
+    painter->setPen(Colors::alphaColor(palette.color(QPalette::WindowText), 0.08));
+    painter->drawLine(rect.bottomLeft(), rect.bottomRight());
 
-    // render
-    Adwaita::Renderer::renderToolBoxFrame(styleOptions, tabRect.width());
+    painter->restore();
 
+    return true;
+}
+
+//___________________________________________________________________________________
+bool Style::drawToolBoxTabControl(const QStyleOption *option, QPainter *painter, const QWidget *widget) const
+{
+    // Libadwaita flat toolbox tab: draw shape + label without parent fallback
+    drawToolBoxTabShapeControl(option, painter, widget);
+    drawToolBoxTabLabelControl(option, painter, widget);
     return true;
 }
 
@@ -6283,6 +6925,8 @@ bool Style::drawGroupBoxComplexControl(const QStyleOptionComplex *option, QPaint
             QColor textColor = groupBox->textColor;
             if (textColor.isValid()) {
                 painter->setPen(textColor);
+            } else {
+                painter->setPen(groupBox->palette.color(QPalette::WindowText));
             }
             int alignment = int(groupBox->textAlignment);
             if (!styleHint(QStyle::SH_UnderlineShortcut, option, widget)) {
@@ -6387,9 +7031,11 @@ bool Style::drawToolButtonComplexControl(const QStyleOptionComplex *option, QPai
         copy.rect = buttonRect;
         if (inTabBar) {
             QRect rect(option->rect);
+            const QColor light = option->palette.color(QPalette::Light);
+            const QColor dark = option->palette.color(QPalette::Dark);
             QColor background(Colors::mix(option->palette.window().color(), option->palette.shadow().color(), 0.15));
-            background = Colors::mix(background, Qt::white, 0.2 * mouseOpacity);
-            background = Colors::mix(background, Qt::black, 0.15 * pressedOpacity);
+            background = Colors::mix(background, light, 0.2 * mouseOpacity);
+            background = Colors::mix(background, dark, 0.15 * pressedOpacity);
             QColor outline(Colors::frameOutlineColor(StyleOptions(option->palette, _variant)));
             painter->setPen(background);
             painter->setBrush(background);
@@ -6570,8 +7216,8 @@ bool Style::drawComboBoxComplexControl(const QStyleOptionComplex *option, QPaint
                 styleOptions.setOutlineColor(outline);
                 styleOptions.setActive(enabled && windowActive);
 
-                // render
-                Adwaita::Renderer::renderButtonFrame(styleOptions);
+                // render with combo-specific radius
+                Adwaita::Renderer::renderComboBoxFrame(styleOptions);
 
                 QStyleOptionComplex tmpOpt(*option);
                 tmpOpt.rect.setWidth(tmpOpt.rect.width() - subControlRect(CC_ComboBox, option, SC_ComboBoxArrow, widget).width() + 3);
@@ -6603,8 +7249,8 @@ bool Style::drawComboBoxComplexControl(const QStyleOptionComplex *option, QPaint
                 styleOptions.setColor(background);
                 styleOptions.setOutlineColor(outline);
 
-                // render
-                Adwaita::Renderer::renderButtonFrame(styleOptions);
+                // render with combo-specific radius
+                Adwaita::Renderer::renderComboBoxFrame(styleOptions);
 
                 if (hasFocus) {
                     QStyleOption copy(*option);
@@ -6785,73 +7431,49 @@ bool Style::drawSliderComplexControl(const QStyleOptionComplex *option, QPainter
         styleOptions.setPainter(painter);
 
         // base color
-        QColor outline(Colors::buttonOutlineColor(styleOptions));
-        QColor grooveColor(Colors::mix(outline, palette.color(QPalette::Window)));
+        const bool isDark = (_variant == AdwaitaDark);
+        QColor grooveColor = Colors::alphaColor(palette.color(QPalette::WindowText), isDark ? (enabled ? 0.15 : 0.08) : (enabled ? 0.12 : 0.06));
         QColor highlightColor(palette.color(QPalette::Highlight));
-        QColor highlightOutline(_dark ? Colors::darken(highlightColor, 0.3) : Colors::darken(highlightColor, 0.15));
 
         if (!enabled) {
             styleOptions.setRect(grooveRect);
             styleOptions.setColor(grooveColor);
-            styleOptions.setOutlineColor(outline);
+            styleOptions.setOutlineColor(QColor());
             Adwaita::Renderer::renderProgressBarGroove(styleOptions);
         } else {
             bool upsideDown(sliderOption->upsideDown);
-
-            // handle rect
             QRect handleRect(subControlRect(CC_Slider, sliderOption, SC_SliderHandle, widget));
+            QRect activeRect(grooveRect);
+            QRect inactiveRect(grooveRect);
 
             if (sliderOption->orientation == Qt::Horizontal) {
-                QRect leftRect(grooveRect);
-                QRect rightRect(grooveRect);
-                leftRect.setRight(handleRect.right() - Metrics::Slider_ControlThickness / 2);
-                rightRect.setLeft(handleRect.left() + Metrics::Slider_ControlThickness / 2);
-
+                int mid = handleRect.center().x();
                 if (upsideDown) {
-                    styleOptions.setRect(leftRect);
-                    styleOptions.setColor(grooveColor);
-                    styleOptions.setOutlineColor(grooveColor);
-                    Adwaita::Renderer::renderProgressBarGroove(styleOptions);
-                    styleOptions.setRect(rightRect);
-                    styleOptions.setColor(highlightColor);
-                    styleOptions.setOutlineColor(highlightColor);
-                    Adwaita::Renderer::renderProgressBarContents(styleOptions);
+                    inactiveRect.setRight(mid);
+                    activeRect.setLeft(mid);
                 } else {
-                    styleOptions.setRect(leftRect);
-                    styleOptions.setColor(highlightColor);
-                    styleOptions.setOutlineColor(highlightColor);
-                    Adwaita::Renderer::renderProgressBarContents(styleOptions);
-                    styleOptions.setRect(rightRect);
-                    styleOptions.setColor(grooveColor);
-                    styleOptions.setOutlineColor(grooveColor);
-                    Adwaita::Renderer::renderProgressBarGroove(styleOptions);
+                    activeRect.setRight(mid);
+                    inactiveRect.setLeft(mid);
                 }
             } else {
-                QRect topRect(grooveRect);
-                topRect.setBottom(handleRect.bottom() - Metrics::Slider_ControlThickness / 2);
-                QRect bottomRect(grooveRect);
-                bottomRect.setTop(handleRect.top() + Metrics::Slider_ControlThickness / 2);
-
+                int mid = handleRect.center().y();
                 if (upsideDown) {
-                    styleOptions.setRect(topRect);
-                    styleOptions.setColor(grooveColor);
-                    styleOptions.setOutlineColor(grooveColor);
-                    Adwaita::Renderer::renderProgressBarGroove(styleOptions);
-                    styleOptions.setRect(bottomRect);
-                    styleOptions.setColor(highlightColor);
-                    styleOptions.setOutlineColor(highlightColor);
-                    Adwaita::Renderer::renderProgressBarContents(styleOptions);
+                    inactiveRect.setBottom(mid);
+                    activeRect.setTop(mid);
                 } else {
-                    styleOptions.setRect(topRect);
-                    styleOptions.setColor(highlightColor);
-                    styleOptions.setOutlineColor(highlightColor);
-                    Adwaita::Renderer::renderProgressBarContents(styleOptions);
-                    styleOptions.setRect(bottomRect);
-                    styleOptions.setColor(grooveColor);
-                    styleOptions.setOutlineColor(grooveColor);
-                    Adwaita::Renderer::renderProgressBarGroove(styleOptions);
+                    activeRect.setBottom(mid);
+                    inactiveRect.setTop(mid);
                 }
             }
+
+            styleOptions.setOutlineColor(QColor());
+            styleOptions.setRect(inactiveRect);
+            styleOptions.setColor(grooveColor);
+            Adwaita::Renderer::renderProgressBarGroove(styleOptions);
+
+            styleOptions.setRect(activeRect);
+            styleOptions.setColor(highlightColor);
+            Adwaita::Renderer::renderProgressBarContents(styleOptions);
         }
     }
 
@@ -7020,35 +7642,10 @@ bool Style::drawScrollBarComplexControl(const QStyleOptionComplex *option, QPain
         opacity = 1;
     }
 
-    // render full groove directly, rather than using the addPage and subPage control element methods
-    if ((mouseOver || animated) && option->subControls & SC_ScrollBarGroove) {
-        // retrieve groove rectangle
-        QRect grooveRect(subControlRect(CC_ScrollBar, option, SC_ScrollBarGroove, widget));
-
-        const QPalette &palette(option->palette);
-        QColor color;
-        if (_dark) {
-            color = Colors::mix(palette.color(QPalette::Window), Colors::mix(palette.color(QPalette::Base), palette.color(QPalette::Window), 0.5), opacity);
-        } else {
-            color = Colors::mix(palette.color(QPalette::Window), Colors::mix(palette.color(QPalette::Window), palette.color(QPalette::Text), 0.2), opacity);
-        }
-
-        const State &state(option->state);
-        bool horizontal(state & State_Horizontal);
-
-        if (horizontal) {
-            grooveRect = centerRect(grooveRect, grooveRect.width(), Metrics::ScrollBar_SliderWidth);
-        } else {
-            grooveRect = centerRect(grooveRect, Metrics::ScrollBar_SliderWidth, grooveRect.height());
-        }
-
-        // render
-        if (enabled) {
-            painter->setPen(Qt::NoPen);
-            painter->setBrush(color);
-            painter->drawRect(option->rect);
-        }
-    }
+    // Libadwaita overlay scrollbar: transparent groove, no solid rectangular backing
+    Q_UNUSED(opacity);
+    Q_UNUSED(animated);
+    Q_UNUSED(mouseOver);
 
     // call base class primitive
     //ParentStyleClass::drawComplexControl( CC_ScrollBar, option, painter, widget );
@@ -7062,15 +7659,6 @@ bool Style::drawScrollBarComplexControl(const QStyleOptionComplex *option, QPain
             newScrollbar.rect = proxy()->subControlRect(CC_ScrollBar, &newScrollbar, SC_ScrollBarSlider, widget);
             if (newScrollbar.rect.isValid()) {
                 proxy()->drawControl(CE_ScrollBarSlider, &newScrollbar, painter, widget);
-
-                if (scrollbar->state & State_HasFocus) {
-                    QStyleOptionFocusRect fropt;
-                    fropt.QStyleOption::operator=(newScrollbar);
-                    fropt.rect.setRect(newScrollbar.rect.x() + 2, newScrollbar.rect.y() + 2,
-                                       newScrollbar.rect.width() - 5,
-                                       newScrollbar.rect.height() - 5);
-                    proxy()->drawPrimitive(PE_FrameFocusRect, &fropt, painter, widget);
-                }
             }
         }
     }
@@ -7267,16 +7855,16 @@ void Style::renderSpinBoxArrow(const SubControl &subControl, const QStyleOptionS
         painter->drawLine(arrowRect.left(), arrowRect.top() + 2 + highlight, arrowRect.left(), arrowRect.bottom() - 1 - highlight);
     }
 
-    if (true) {
+    if (opacity > 0.01 || pressedOpacity > 0.01) {
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
         painter->setPen(Qt::NoPen);
         QColor background = Colors::mix(palette.base().color(), palette.text().color(), opacity * 0.1);
         background = Colors::mix(background, palette.dark().color(), pressedOpacity);
         painter->setBrush(background);
-        if (hasFocus) {
-            painter->drawRect(arrowRect.adjusted(1, 3, -1, -2));
-        } else {
-            painter->drawRect(arrowRect.adjusted(1, 2, -1, -1));
-        }
+        QRectF bgRect = hasFocus ? arrowRect.adjusted(1, 3, -1, -2) : arrowRect.adjusted(1, 2, -1, -1);
+        painter->drawRoundedRect(bgRect, 4.0, 4.0);
+        painter->restore();
     }
 
     // render
@@ -7774,7 +8362,7 @@ bool Style::hasAlteredBackground(const QWidget *widget) const
 //____________________________________________________________________
 bool Style::hasCustomTextColors(const QPalette &palette) const
 {
-    const QPalette adwaitaPalette = Colors::palette(_dark ?  ColorVariant::AdwaitaDark : ColorVariant::Adwaita);
+    const QPalette adwaitaPalette = Colors::palette(_variant);
 
     const QColor activeTextColor = palette.color(QPalette::Active, QPalette::Text);
     const QColor inactiveTextColor = palette.color(QPalette::Inactive, QPalette::Text);
@@ -7785,3 +8373,6 @@ bool Style::hasCustomTextColors(const QPalette &palette) const
 }
 
 }
+
+// Include the MOC output for classes defined in this file (XdgPortalListener).
+#include "adwaitastyle.moc"

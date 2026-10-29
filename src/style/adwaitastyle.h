@@ -41,6 +41,7 @@
 namespace AdwaitaPrivate
 {
 class TabBarData;
+class XdgPortalListener;
 }
 
 namespace Adwaita
@@ -77,6 +78,9 @@ public:
 
     //* widget polishing
     virtual void polish(QWidget *widget);
+
+    //* application polishing -- overrides the global application palette
+    virtual void polish(QApplication *application);
 
     //* widget unpolishing
     virtual void unpolish(QWidget *widget);
@@ -147,6 +151,12 @@ protected Q_SLOTS:
 
     //* standard icons
     virtual QIcon standardIconImplementation(StandardPixmap standardPixmap, const QStyleOption *option, const QWidget *widget) const;
+
+    //* called when the XDG Desktop Portal reports a color-scheme change
+    void onPortalColorSchemeChanged(Adwaita::ColorVariant newVariant);
+
+    //* called when the XDG Desktop Portal reports an accent-color change
+    void onAccentColorChanged(const QColor &newColor);
 
 protected:
 
@@ -315,10 +325,12 @@ protected:
     virtual bool drawHeaderSectionControl(const QStyleOption *option, QPainter *painter, const QWidget *widget) const;
     virtual bool drawHeaderLabelControl(const QStyleOption *option, QPainter *painter, const QWidget *widget) const;
     virtual bool drawHeaderEmptyAreaControl(const QStyleOption *option, QPainter *painter, const QWidget *widget) const;
+    virtual bool drawHeaderControl(const QStyleOption *option, QPainter *painter, const QWidget *widget) const;
     virtual bool drawTabBarTabLabelControl(const QStyleOption *option, QPainter *painter, const QWidget *widget) const;
     virtual bool drawTabBarTabShapeControl(const QStyleOption *option, QPainter *painter, const QWidget *widget) const;
     virtual bool drawToolBoxTabLabelControl(const QStyleOption *option, QPainter *painter, const QWidget *widget) const;
     virtual bool drawToolBoxTabShapeControl(const QStyleOption *option, QPainter *painter, const QWidget *widget) const;
+    virtual bool drawToolBoxTabControl(const QStyleOption *option, QPainter *painter, const QWidget *widget) const;
     virtual bool drawDockWidgetTitleControl(const QStyleOption *option, QPainter *painter, const QWidget *widget) const;
 
     //*@}
@@ -556,6 +568,12 @@ private:
 
     bool _isGNOME { false };
     bool _isKDE { false };
+
+    //* accent color from the portal (fallback: Adwaita blue)
+    QColor _accentColor { QStringLiteral("#3584e4") };
+
+    //* XDG Desktop Portal dark-mode listener (nullptr if portal unavailable)
+    AdwaitaPrivate::XdgPortalListener *_portalListener { nullptr };
 
     //@}
 };

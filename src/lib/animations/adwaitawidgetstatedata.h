@@ -21,12 +21,12 @@
 #define ADWAITA_WIDGET_STATE_DATA_H
 
 #include "adwaitagenericdata.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 namespace Adwaita
 {
 //* handle widget state (hover/focus/enable) changes
-class ADWAITAQT_EXPORT WidgetStateData : public GenericData
+class LIBADWAITA_EXPORT WidgetStateData : public GenericData
 {
     Q_OBJECT
 public:

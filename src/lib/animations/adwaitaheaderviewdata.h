@@ -21,14 +21,14 @@
 #define ADWAITA_HEADER_VIEW_DATA_H
 
 #include "adwaitaanimationdata.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 #include <QHeaderView>
 
 namespace Adwaita
 {
 //* headerviews
-class ADWAITAQT_EXPORT HeaderViewData : public AnimationData
+class LIBADWAITA_EXPORT HeaderViewData : public AnimationData
 {
     Q_OBJECT
 

@@ -17,12 +17,12 @@ if (MSVC)
     add_definitions(-D_USE_MATH_DEFINES) # Needed for M_PI on MSVC
 endif()
 
-set(LIBRARY_NAME "adwaita-qt")
+set(LIBRARY_NAME "libadwaita")
 
 add_library(${LIBRARY_NAME} MODULE ${Adwaita_SRCS})
 target_link_libraries(${LIBRARY_NAME}
-    adwaitaqt${ADWAITAQT_SUFFIX}
-    adwaitaqt${ADWAITAQT_SUFFIX}priv
+    adwaita${LIBADWAITA_SUFFIX}
+    adwaita${LIBADWAITA_SUFFIX}priv
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::DBus
     Qt${QT_VERSION_MAJOR}::Gui
@@ -37,7 +37,9 @@ if (NOT APPLE AND NOT WIN32)
     set_target_properties(${LIBRARY_NAME} PROPERTIES
         LINK_FLAGS "-Wl,--no-undefined"
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-        OUTPUT_NAME "adwaita"
+        OUTPUT_NAME "libadwaita"
+        INSTALL_RPATH "$ORIGIN:$ORIGIN/..:$ORIGIN/../..:$ORIGIN/../../..:$ORIGIN/../../../lib:$ORIGIN/../../../lib64"
+        BUILD_WITH_INSTALL_RPATH TRUE
         PREFIX "")
 endif()
 

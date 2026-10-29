@@ -21,14 +21,14 @@
 #define ADWAITA_ANIMATION_H
 
 #include "adwaita.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 #include <QPropertyAnimation>
 #include <QVariant>
 
 namespace Adwaita
 {
-class ADWAITAQT_EXPORT Animation : public QPropertyAnimation
+class LIBADWAITA_EXPORT Animation : public QPropertyAnimation
 {
     Q_OBJECT
 public:

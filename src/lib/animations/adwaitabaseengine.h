@@ -21,7 +21,7 @@
 #define ADWAITA_BASE_ENGINE_H
 
 #include "adwaita.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 #include <QObject>
 #include <QSet>
@@ -30,7 +30,7 @@ namespace Adwaita
 {
 //* base class for all animation engines
 /** it is used to store configuration values used by all animations stored in the engine */
-class ADWAITAQT_EXPORT BaseEngine : public QObject
+class LIBADWAITA_EXPORT BaseEngine : public QObject
 {
     Q_OBJECT
 public:

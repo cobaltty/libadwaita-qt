@@ -24,12 +24,12 @@
 #include "adwaitabaseengine.h"
 #include "adwaitadatamap.h"
 #include "adwaitawidgetstatedata.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 namespace Adwaita
 {
 //* used for simple widgets
-class ADWAITAQT_EXPORT WidgetStateEngine : public BaseEngine
+class LIBADWAITA_EXPORT WidgetStateEngine : public BaseEngine
 {
     Q_OBJECT
 public:

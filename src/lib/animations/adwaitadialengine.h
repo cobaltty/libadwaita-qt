@@ -22,12 +22,12 @@
 
 #include "adwaitadialdata.h"
 #include "adwaitawidgetstateengine.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 namespace Adwaita
 {
 //* stores dial hovered action and timeLine
-class ADWAITAQT_EXPORT DialEngine : public WidgetStateEngine
+class LIBADWAITA_EXPORT DialEngine : public WidgetStateEngine
 {
     Q_OBJECT
 public:

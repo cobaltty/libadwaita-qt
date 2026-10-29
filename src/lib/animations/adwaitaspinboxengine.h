@@ -23,12 +23,12 @@
 #include "adwaitabaseengine.h"
 #include "adwaitadatamap.h"
 #include "adwaitaspinboxdata.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 namespace Adwaita
 {
 //* handle spinbox arrows hover effect
-class ADWAITAQT_EXPORT SpinBoxEngine : public BaseEngine
+class LIBADWAITA_EXPORT SpinBoxEngine : public BaseEngine
 {
     Q_OBJECT
 public:

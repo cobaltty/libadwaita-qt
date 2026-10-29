@@ -28,7 +28,7 @@
 #define ADWAITA_TRANSITION_DATA_H
 
 #include "adwaitatransitionwidget.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 #include <QElapsedTimer>
 #include <QObject>
@@ -37,7 +37,7 @@
 namespace Adwaita
 {
 //* generic data
-class ADWAITAQT_EXPORT TransitionData : public QObject
+class LIBADWAITA_EXPORT TransitionData : public QObject
 {
     Q_OBJECT
 public:

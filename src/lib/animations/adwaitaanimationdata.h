@@ -21,7 +21,7 @@
 #define ADWAITA_ANIMATION_DATA_H
 
 #include "adwaitaanimation.h"
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 #include <QEvent>
 #include <QObject>
@@ -32,7 +32,7 @@
 namespace Adwaita
 {
 //* base class
-class ADWAITAQT_EXPORT AnimationData : public QObject
+class LIBADWAITA_EXPORT AnimationData : public QObject
 {
     Q_OBJECT
 public:

@@ -1,9 +1,9 @@
-project(Adwaita)
+project(libadwaita)
 
 cmake_minimum_required(VERSION 3.17)
 
-set(ADWAITAQT_VERSION_MAJOR 1)
-set(ADWAITAQT_VERSION "1.4.50")
+set(LIBADWAITA_VERSION_MAJOR 1)
+set(LIBADWAITA_VERSION "1.4.50")
 
 option(USE_QT6 "Use Qt6 instead of Qt5" OFF)
 
@@ -11,12 +11,12 @@ if (USE_QT6)
     set(QT_MIN_VERSION "6.2.0")
     set(CMAKE_CXX_STANDARD 17)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
-    set(ADWAITAQT_SUFFIX "6")
+    set(LIBADWAITA_SUFFIX "6")
 else()
     set(QT_MIN_VERSION "5.15.2")
     set(CMAKE_CXX_STANDARD 11)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
-    set(ADWAITAQT_SUFFIX "")
+    set(LIBADWAITA_SUFFIX "")
 endif()
 
 set(CMAKE_AUTOMOC ON)

@@ -23,27 +23,36 @@
 #include "adwaita.h"
 
 #include <QApplication>
+#include <QDebug>
 
 namespace Adwaita
 {
 
 QStyle *StylePlugin::create(const QString &key)
 {
-    if (key.toLower() == QStringLiteral("adwaita")) {
+    qWarning() << "LibAdwaita PLUGIN: create() called with key:" << key;
+    const QString lower = key.toLower();
+
+    if (lower == QStringLiteral("libadwaita") || lower == QStringLiteral("adwaita")) {
+        qWarning() << "LibAdwaita PLUGIN: returning custom Adwaita style";
         return new Style(Adwaita::Adwaita);
     }
 
-    if (key.toLower() == QStringLiteral("adwaita-dark")) {
+    if (lower == QStringLiteral("libadwaita-dark") || lower == QStringLiteral("adwaita-dark")) {
         return new Style(Adwaita::AdwaitaDark);
     }
 
-    if (key.toLower() == QStringLiteral("adwaita-highcontrast") ||
-        key.toLower() == QStringLiteral("highcontrast")) {
+    if (lower == QStringLiteral("libadwaita-light") || lower == QStringLiteral("adwaita-light")) {
+        return new Style(Adwaita::Adwaita);
+    }
+
+    if (lower == QStringLiteral("libadwaita-highcontrast") ||
+        lower == QStringLiteral("highcontrast")) {
         return new Style(Adwaita::AdwaitaHighcontrast);
     }
 
-    if (key.toLower() == QStringLiteral("adwaita-highcontrastinverse") ||
-        key.toLower() == QStringLiteral("highcontrastinverse")) {
+    if (lower == QStringLiteral("libadwaita-highcontrastinverse") ||
+        lower == QStringLiteral("highcontrastinverse")) {
         return new Style(Adwaita::AdwaitaHighcontrastInverse);
     }
 
@@ -56,8 +65,10 @@ StylePlugin::~StylePlugin()
 
 QStringList StylePlugin::keys() const
 {
-    return QStringList() << QStringLiteral("Adwaita") << QStringLiteral("Adwaita-Dark") << QStringLiteral("Adwaita-Light")
-                         << QStringLiteral("Adwaita-HighContrast") << QStringLiteral("Adwaita-HighContrastInverse");
+    return QStringList()
+        << QStringLiteral("LibAdwaita") << QStringLiteral("LibAdwaita-Dark") << QStringLiteral("LibAdwaita-Light")
+        << QStringLiteral("Adwaita") << QStringLiteral("Adwaita-Dark") << QStringLiteral("Adwaita-Light")
+        << QStringLiteral("LibAdwaita-HighContrast") << QStringLiteral("LibAdwaita-HighContrastInverse");
 }
 
 } // namespace Adwaita

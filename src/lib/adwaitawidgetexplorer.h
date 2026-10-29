@@ -20,7 +20,7 @@
 #ifndef ADWAITA_WIDGET_EXPLORER_H
 #define ADWAITA_WIDGET_EXPLORER_H
 
-#include "adwaitaqt_export.h"
+#include "libadwaita_export.h"
 
 #include <QEvent>
 #include <QMap>
@@ -31,7 +31,7 @@
 namespace Adwaita
 {
 //* print widget's and parent's information on mouse click
-class ADWAITAQT_EXPORT WidgetExplorer : public QObject
+class LIBADWAITA_EXPORT WidgetExplorer : public QObject
 {
     Q_OBJECT
 public:
